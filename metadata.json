@@ -1,0 +1,8 @@
+{
+  "name": "Copy of AI Music Video Director",
+  "description": "Your AI-powered creative partner for music videos. Deeply analyzes audio tracks, lyrics, and beats to generate scene breakdowns, Imagen 3 visual storyboard thumbnails, ComfyUI batching, and VEO prompts with Ollama, Open Code, and Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
