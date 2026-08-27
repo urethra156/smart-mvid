@@ -143,6 +143,8 @@ export function autoSetupModelsForScript(mood: string, title: string = '', durat
       width,
       height,
       frameCount,
+      fps: 16,
+      denoise: 1.0,
       seed: -1,
     },
     moodCategory,

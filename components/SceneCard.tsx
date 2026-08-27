@@ -19,10 +19,12 @@ import {
   CheckCircle2Icon,
   XCircleIcon,
   CpuIcon,
-  CodeBracketIcon
+  CodeBracketIcon,
+  KeyIcon
 } from './icons/Icons';
 import { generateVeoPrompt, generateVideoFromPrompt } from '../services/geminiService';
 import { ComfyUIConfig, generateVideoWithComfyUI, downloadComfyUiWorkflowJson, buildComfyUiApiPayload } from '../services/comfyuiService';
+import { downloadComfyUiVisualCanvasJsonFile, optimizeSceneWorkflow, COMFYUI_ARCHITECTURES } from '../services/aiComfyWorkflowService';
 import { generateProceduralSceneVideo } from '../utils/motionVideoGenerator';
 import { 
   generateSceneThumbnailWithImagen, 
@@ -247,6 +249,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
   const [previewTab, setPreviewTab] = useState<'thumbnail' | 'video'>(scene.thumbnailUrl ? 'thumbnail' : 'video');
   const [isEditingCustomThumbnailPrompt, setIsEditingCustomThumbnailPrompt] = useState(false);
   const [customThumbnailPrompt, setCustomThumbnailPrompt] = useState('');
+  const [autoTuneToast, setAutoTuneToast] = useState<string | null>(null);
 
   useEffect(() => {
     // When the component receives a new scene or the editing state changes, reset its internal state.
@@ -256,6 +259,18 @@ const SceneCard: React.FC<SceneCardProps> = ({
       setLyricsString(lyricsToStringForEditor(scene.correspondingLyrics));
     }
   }, [scene, isEditing]);
+
+  const handleAiAutoTuneScene = () => {
+    const opt = optimizeSceneWorkflow(scene, overallMood, undefined, 'mid_12gb', comfyConfig);
+    const updated = {
+      ...scene,
+      veoPrompt: opt.enhancedPrompt,
+      cameraAngle: scene.cameraAngle || opt.cameraMovementTag,
+    };
+    onSave(updated);
+    setAutoTuneToast(`AI Auto-tuned prompt for ${opt.architecture.name}!`);
+    setTimeout(() => setAutoTuneToast(null), 4000);
+  };
 
   const handleGenerateThumbnail = async (overridePrompt?: string) => {
     setIsGeneratingThumbnail(true);
@@ -277,8 +292,23 @@ const SceneCard: React.FC<SceneCardProps> = ({
       setThumbnailError(null);
       setPreviewTab('thumbnail');
     } catch (err: any) {
-      console.error("Thumbnail generation error:", err);
+      console.warn("Thumbnail generation notice:", err);
       const errMsg = err?.message || "Failed to generate thumbnail";
+      
+      // If cloud image generation fails (e.g. quota depleted, 429, permission),
+      // automatically generate high-fidelity procedural concept artwork
+      // so the director immediately has a visually rich storyboard preview.
+      if (!scene.thumbnailUrl || errMsg.includes('IMAGEN_QUOTA_EXHAUSTED') || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+        try {
+          const fallbackUrl = generateProceduralStoryboardArtwork(scene, overallMood, colorPalette);
+          const updatedScene = { ...scene, thumbnailUrl: fallbackUrl, thumbnailPrompt: 'Procedural Concept Artwork' };
+          onSave(updatedScene);
+          setPreviewTab('thumbnail');
+        } catch (procErr) {
+          console.warn("Could not generate procedural fallback:", procErr);
+        }
+      }
+      
       setThumbnailError(errMsg);
     } finally {
       setIsGeneratingThumbnail(false);
@@ -325,6 +355,11 @@ const SceneCard: React.FC<SceneCardProps> = ({
   const handleDownloadComfyWorkflow = () => {
     if (!comfyConfig) return;
     downloadComfyUiWorkflowJson(scene.veoPrompt, scene.sceneNumber, comfyConfig);
+  };
+
+  const handleDownloadCanvasWorkflow = () => {
+    if (!comfyConfig) return;
+    downloadComfyUiVisualCanvasJsonFile(scene, comfyConfig, 'Music_Video');
   };
 
   const handleFieldChange = (e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
@@ -762,27 +797,56 @@ const SceneCard: React.FC<SceneCardProps> = ({
                     <div className="p-4 bg-slate-900/95 border border-amber-500/60 text-slate-200 rounded-xl shadow-lg mb-4">
                       <div className="flex items-center gap-2 mb-1.5">
                         <InformationCircleIcon className="w-5 h-5 text-amber-400 flex-shrink-0" />
-                        <p className="font-bold text-amber-300">Imagen Thumbnail Notice</p>
+                        <p className="font-bold text-amber-300">
+                          {thumbnailError.includes('IMAGEN_QUOTA_EXHAUSTED') || thumbnailError.includes('RESOURCE_EXHAUSTED') || thumbnailError.includes('429') || thumbnailError.toLowerCase().includes('depleted')
+                            ? 'AI Studio Quota / Credits Depleted'
+                            : thumbnailError.includes('IMAGEN_PERMISSION_DENIED')
+                            ? 'Google Imagen Access Notice'
+                            : thumbnailError.includes('API_KEY_NOT_FOUND')
+                            ? 'API Key Required'
+                            : 'Thumbnail Generation Notice'}
+                        </p>
                       </div>
                       <p className="text-xs text-slate-300 mb-3 leading-relaxed">
-                        {thumbnailError.includes('IMAGEN_PERMISSION_DENIED') 
-                          ? 'Google Imagen 3 API is available for this project. You can also generate an instant offline concept artboard with the browser canvas renderer.'
+                        {thumbnailError.includes('IMAGEN_QUOTA_EXHAUSTED') || thumbnailError.includes('RESOURCE_EXHAUSTED') || thumbnailError.includes('429') || thumbnailError.toLowerCase().includes('depleted')
+                          ? 'Your Google AI Studio project credits or quota for Google Imagen are currently depleted. You can select another API key, or generate an instant conceptual artboard locally in your browser for free.'
+                          : thumbnailError.includes('IMAGEN_PERMISSION_DENIED')
+                          ? 'Google Imagen 3 API is not enabled for this key. You can select another API key or generate an instant offline concept artboard with the browser canvas renderer.'
+                          : thumbnailError.includes('API_KEY_NOT_FOUND')
+                          ? 'Please configure or select a valid Google AI Studio API key with access to Imagen models.'
                           : formatErrorMessage(thumbnailError)}
                       </p>
                       <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          onClick={() => handleGenerateThumbnail()}
-                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-md shadow flex items-center gap-1.5 transition-all"
-                        >
-                          <ArrowPathIcon className="w-3.5 h-3.5" />
-                          <span>Retry Imagen 3</span>
-                        </button>
+                        {typeof window !== 'undefined' && window.aistudio?.openSelectKey && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                await window.aistudio?.openSelectKey?.();
+                                setThumbnailError(null);
+                                handleGenerateThumbnail();
+                              } catch (e) {
+                                console.warn(e);
+                              }
+                            }}
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg shadow flex items-center gap-1.5 transition-all"
+                          >
+                            <KeyIcon className="w-3.5 h-3.5" />
+                            <span>Select / Change API Key</span>
+                          </button>
+                        )}
                         <button
                           onClick={handleGenerateProceduralThumbnailArt}
-                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5"
+                          className="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow"
                         >
-                          <SparklesIcon className="w-3.5 h-3.5" />
-                          <span>Generate Offline Concept Art</span>
+                          <SparklesIcon className="w-3.5 h-3.5 text-amber-300" />
+                          <span>Generate Free Concept Artboard</span>
+                        </button>
+                        <button
+                          onClick={() => handleGenerateThumbnail()}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5"
+                        >
+                          <ArrowPathIcon className="w-3.5 h-3.5" />
+                          <span>Retry</span>
                         </button>
                         <button
                           onClick={() => setThumbnailError(null)}
@@ -1030,26 +1094,45 @@ const SceneCard: React.FC<SceneCardProps> = ({
               <p className="text-slate-300">{scene.description}</p>
             </div>
 
-            <div className="bg-slate-900 p-4 rounded-lg border border-slate-600">
+            {/* ComfyUI AI Intelligence & Auto-Workflow Bar */}
+            <div className="bg-slate-900 p-4 rounded-xl border border-slate-700 shadow-md">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-                <h4 className="font-bold text-cyan-400 flex items-center gap-2">
-                  <CameraIcon className="w-5 h-5"/>
-                  {engineMode === 'comfyui' ? 'ComfyUI Model Prompt' : 'VEO Prompt'}
-                </h4>
+                <div className="flex items-center gap-2">
+                  <CameraIcon className="w-5 h-5 text-cyan-400"/>
+                  <h4 className="font-bold text-cyan-400">
+                    {engineMode === 'comfyui' ? 'ComfyUI AI Model Prompt' : 'VEO Prompt'}
+                  </h4>
+                  {engineMode === 'comfyui' && comfyConfig && (
+                    <span className="px-2 py-0.5 bg-indigo-950 text-indigo-300 border border-indigo-700/50 rounded-full text-[10px] font-mono">
+                      {COMFYUI_ARCHITECTURES[comfyConfig.workflowType]?.name || 'Wan 2.1 Video'}
+                    </span>
+                  )}
+                </div>
+
                 <div className="flex flex-wrap items-center gap-2">
+                  {/* AI Auto-Tune Workflow Button */}
+                  <button
+                    onClick={handleAiAutoTuneScene}
+                    className="flex items-center text-xs px-2.5 py-1 rounded-md bg-gradient-to-r from-cyan-600/80 to-indigo-600/80 hover:from-cyan-500 hover:to-indigo-500 text-white font-semibold transition-all shadow-sm group"
+                    title="Automatically optimize camera motion, cinematic lighting keywords, and model formatting for this scene"
+                  >
+                    <SparklesIcon className="w-3.5 h-3.5 mr-1 text-cyan-200 group-hover:rotate-12 transition-transform" />
+                    AI Auto-Tune
+                  </button>
+
                   <button
                     onClick={handleCopy}
-                    className="flex items-center text-xs px-2.5 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                    className="flex items-center text-xs px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
                   >
                     {copied ? (
                       <>
                         <CheckIcon className="w-3.5 h-3.5 mr-1 text-green-400" />
-                        Copied Text!
+                        Copied!
                       </>
                     ) : (
                       <>
                         <ClipboardIcon className="w-3.5 h-3.5 mr-1" />
-                        Copy Text
+                        Copy Prompt
                       </>
                     )}
                   </button>
@@ -1058,7 +1141,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
                     <>
                       <button
                         onClick={handleCopyComfyJson}
-                        className="flex items-center text-xs px-2.5 py-1 rounded-md bg-indigo-900/60 hover:bg-indigo-800 text-indigo-300 border border-indigo-700/50 transition-colors"
+                        className="flex items-center text-xs px-2.5 py-1 rounded-md bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/50 transition-colors"
                         title="Copy ComfyUI API Prompt payload JSON"
                       >
                         {copiedComfy ? (
@@ -1069,7 +1152,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
                         ) : (
                           <>
                             <ClipboardIcon className="w-3.5 h-3.5 mr-1 text-indigo-400" />
-                            Copy ComfyUI API JSON
+                            API JSON
                           </>
                         )}
                       </button>
@@ -1077,15 +1160,32 @@ const SceneCard: React.FC<SceneCardProps> = ({
                       <button
                         onClick={handleDownloadComfyWorkflow}
                         className="flex items-center text-xs px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-800 transition-colors"
-                        title="Download ComfyUI Workflow JSON file for local desktop"
+                        title="Download ComfyUI API Workflow JSON file for local desktop"
                       >
                         <FilmIcon className="w-3.5 h-3.5 mr-1 text-cyan-400" />
-                        Download Workflow .json
+                        .json
+                      </button>
+
+                      <button
+                        onClick={handleDownloadCanvasWorkflow}
+                        className="flex items-center text-xs px-2.5 py-1 rounded-md bg-indigo-900/50 hover:bg-indigo-800 text-cyan-200 border border-indigo-700/60 transition-colors"
+                        title="Download full ComfyUI Canvas UI Workflow for direct Web GUI drag & drop"
+                      >
+                        <CodeBracketIcon className="w-3.5 h-3.5 mr-1 text-indigo-400" />
+                        Canvas UI
                       </button>
                     </>
                   )}
                 </div>
               </div>
+
+              {autoTuneToast && (
+                <div className="mb-2 p-2 bg-emerald-950/80 border border-emerald-700 text-emerald-300 text-xs rounded flex items-center gap-1.5 animate-fadeIn">
+                  <CheckCircle2Icon className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>{autoTuneToast}</span>
+                </div>
+              )}
+
               <p className="text-slate-200 font-mono text-sm leading-relaxed">{scene.veoPrompt}</p>
             </div>
           </>

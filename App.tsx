@@ -2,14 +2,17 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { generateVideoScript, validateApiKey } from './services/geminiService';
 import { generateLocalVideoScript } from './services/localScriptService';
 import { generateScriptWithOllamaOrOpenCode, loadOllamaConfig, saveOllamaConfig, DEFAULT_OLLAMA_CONFIG } from './services/ollamaService';
+import { ComfyUIConfig, ComfyUIStatus, loadComfyUiConfig, saveComfyUiConfig, checkComfyUiStatus } from './services/comfyuiService';
+import { COMFYUI_ARCHITECTURES } from './services/aiComfyWorkflowService';
 import { VideoScript, MoodPreset, Scene, LyricLine, ElementWithImage, ConsistentElement, LlmProvider, OllamaConfig } from './types';
 import LyricsInput from './components/LyricsInput';
 import ElementUploader from './components/ElementUploader';
 import VideoScriptDisplay from './components/VideoScriptDisplay';
 import { OllamaSettingsModal } from './components/OllamaSettingsModal';
+import { ComfyUISettingsModal } from './components/ComfyUISettingsModal';
 import Loader from './components/Loader';
 import { ResetConfirmModal } from './components/ResetConfirmModal';
-import { FilmIcon, KeyIcon, CpuIcon, CodeBracketIcon, SlidersIcon, SparklesIcon } from './components/icons/Icons';
+import { FilmIcon, KeyIcon, CpuIcon, CodeBracketIcon, SlidersIcon, SparklesIcon, BoltIcon } from './components/icons/Icons';
 
 const LOCAL_STORAGE_KEY = 'ai-music-video-script';
 const LLM_PROVIDER_STORAGE_KEY = 'ai_music_video_llm_provider';
@@ -166,6 +169,12 @@ const App: React.FC = () => {
   const [ollamaConfig, setOllamaConfig] = useState<OllamaConfig>(() => loadOllamaConfig());
   const [isOllamaModalOpen, setIsOllamaModalOpen] = useState<boolean>(false);
 
+  // ComfyUI Video Generation State
+  const [comfyConfig, setComfyConfig] = useState<ComfyUIConfig>(() => loadComfyUiConfig());
+  const [isComfyModalOpen, setIsComfyModalOpen] = useState<boolean>(false);
+  const [comfyStatus, setComfyStatus] = useState<ComfyUIStatus | null>(null);
+  const [videoTarget, setVideoTarget] = useState<'comfyui' | 'veo'>('comfyui');
+
   // Save LLM provider changes
   const handleSelectProvider = (provider: LlmProvider) => {
     setLlmProvider(provider);
@@ -178,6 +187,26 @@ const App: React.FC = () => {
     setOllamaConfig(newConfig);
     saveOllamaConfig(newConfig);
   };
+
+  const handleSaveComfyConfig = (newConfig: ComfyUIConfig) => {
+    setComfyConfig(newConfig);
+    saveComfyUiConfig(newConfig);
+  };
+
+  const handleCheckComfyStatus = useCallback(async (url?: string) => {
+    const targetUrl = url || comfyConfig.serverUrl;
+    try {
+      const res = await checkComfyUiStatus(targetUrl);
+      setComfyStatus(res);
+    } catch (e) {
+      setComfyStatus({ online: false, message: 'Could not connect to ComfyUI' });
+    }
+  }, [comfyConfig.serverUrl]);
+
+  // Check ComfyUI server status on mount and config change
+  useEffect(() => {
+    handleCheckComfyStatus();
+  }, [handleCheckComfyStatus]);
 
 
   // Effect to check API key on mount without blocking app access
@@ -248,7 +277,8 @@ const App: React.FC = () => {
     setError("Your API key is invalid or has insufficient permissions for video generation. Please select a valid key.");
   }, []);
 
-  const handleAnalyze = useCallback(async () => {
+  const handleAnalyze = useCallback(async (forcedProvider?: LlmProvider) => {
+    const activeProv = forcedProvider || llmProvider;
     if (!lyrics.trim() && !audioFile) {
       setError('Please enter lyrics or upload an audio file.');
       return;
@@ -261,9 +291,9 @@ const App: React.FC = () => {
     
     setIsLoading(true);
     setLoadingStatusText(
-      llmProvider === 'ollama'
+      activeProv === 'ollama'
         ? `Connecting to Ollama (${ollamaConfig.model}) at ${ollamaConfig.endpoint}...`
-        : llmProvider === 'opencode'
+        : activeProv === 'opencode'
         ? `Connecting to Open Code at ${ollamaConfig.openCodeEndpoint}...`
         : 'Connecting to Google Gemini API...'
     );
@@ -273,7 +303,7 @@ const App: React.FC = () => {
     try {
       let rawScript: VideoScript;
 
-      if (llmProvider === 'ollama' || llmProvider === 'opencode') {
+      if (activeProv === 'ollama' || activeProv === 'opencode') {
         try {
           rawScript = await generateScriptWithOllamaOrOpenCode(
             { lyrics, audioFile },
@@ -283,15 +313,14 @@ const App: React.FC = () => {
             (status) => setLoadingStatusText(status)
           );
         } catch (localLlmErr: any) {
-          console.warn(`Local LLM (${llmProvider}) generation failed:`, localLlmErr);
+          console.warn(`Local LLM (${activeProv}) generation failed:`, localLlmErr);
           const errorMsg = localLlmErr?.message || 'Local LLM connection failed.';
           
-          // Provide descriptive actionable error before falling back
           if (errorMsg.includes('Failed to fetch') || errorMsg.includes('CORS') || errorMsg.includes('NetworkError')) {
             throw new Error(
-              `Cannot connect to ${llmProvider === 'ollama' ? 'Ollama' : 'Open Code'} server at ${
-                llmProvider === 'ollama' ? ollamaConfig.endpoint : ollamaConfig.openCodeEndpoint
-              }.\n\nEnsure your local server is running with CORS enabled (e.g., OLLAMA_ORIGINS="*" ollama serve). Click "Configure Local Engines" to test connection.`
+              `Cannot connect to ${activeProv === 'ollama' ? 'Ollama' : 'Open Code'} server at ${
+                activeProv === 'ollama' ? ollamaConfig.endpoint : ollamaConfig.openCodeEndpoint
+              }.\n\nBrowser Security: When running over HTTPS, requests to unencrypted local HTTP servers are blocked. Use an HTTPS tunnel (e.g. ngrok http 11434) or switch to Gemini Cloud / Built-in Director Engine below.`
             );
           } else {
             throw localLlmErr;
@@ -418,6 +447,12 @@ const App: React.FC = () => {
                       onSelectProvider={handleSelectProvider}
                       ollamaConfig={ollamaConfig}
                       onOpenOllamaSettings={() => setIsOllamaModalOpen(true)}
+                      comfyConfig={comfyConfig}
+                      onUpdateComfyConfig={handleSaveComfyConfig}
+                      onOpenComfySettings={() => setIsComfyModalOpen(true)}
+                      comfyStatus={comfyStatus}
+                      videoTarget={videoTarget}
+                      setVideoTarget={setVideoTarget}
                     />
                 </div>
             );
@@ -458,20 +493,37 @@ const App: React.FC = () => {
     }
   };
 
+  const currentComfyArch = COMFYUI_ARCHITECTURES[comfyConfig.workflowType] || COMFYUI_ARCHITECTURES.wan2_1;
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200 font-sans p-4 sm:p-6 lg:p-8">
       <div className="max-w-4xl mx-auto">
         <header className="text-center mb-8 relative">
           <div className="flex items-center justify-center gap-4 mb-2">
             <FilmIcon className="w-10 h-10 text-indigo-400" />
-            <h1 className="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
+            <h1 className="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-cyan-300 to-amber-300">
               AI Music Video Director
             </h1>
           </div>
-          <p className="text-slate-400 text-lg">
-            Deeply analyze any song and generate a complete, cinematic music video script with Ollama, Open Code, or Gemini.
+          <p className="text-slate-400 text-base sm:text-lg max-w-2xl mx-auto">
+            Deeply analyze any song and generate complete storyboard shotlists with auto-tuned <span className="text-cyan-300 font-semibold">ComfyUI Workflows</span> (Wan 2.1, HunyuanVideo, AnimateDiff) &amp; <span className="text-indigo-300 font-semibold">Google VEO</span> prompts.
           </p>
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            {/* ComfyUI Model Quick Button */}
+            <button
+              onClick={() => setIsComfyModalOpen(true)}
+              className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold border bg-slate-950 text-cyan-300 border-cyan-700/80 hover:bg-slate-900 hover:border-cyan-400 shadow-sm transition-all group"
+              title="Open ComfyUI Model Architect, VRAM tuner, and server connection"
+            >
+              <BoltIcon className="w-3.5 h-3.5 mr-1.5 text-cyan-400 group-hover:scale-110 transition-transform" />
+              <span>
+                ComfyUI: <strong>{currentComfyArch.name}</strong>
+              </span>
+              <span className={`ml-2 w-2 h-2 rounded-full ${comfyStatus?.online ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]' : 'bg-amber-400'}`} />
+              <SlidersIcon className="w-3 h-3 ml-1.5 text-slate-400 group-hover:text-white" />
+            </button>
+
+            {/* Scriptwriter LLM Switcher */}
             <button
               onClick={() => setIsOllamaModalOpen(true)}
               className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
@@ -563,10 +615,12 @@ const App: React.FC = () => {
                         onClick={() => {
                           handleSelectProvider('gemini');
                           setError(null);
+                          handleAnalyze('gemini');
                         }}
-                        className="px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg text-xs font-semibold transition-all"
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition-all shadow flex items-center gap-1.5"
                       >
-                        Switch to Gemini Cloud
+                        <SparklesIcon className="w-3.5 h-3.5 text-amber-300" />
+                        <span>Generate with Gemini Cloud AI</span>
                       </button>
                       <button
                         onClick={() => setIsOllamaModalOpen(true)}
@@ -596,6 +650,17 @@ const App: React.FC = () => {
         onSaveConfig={handleSaveOllamaConfig}
         activeProvider={llmProvider}
         onSelectProvider={handleSelectProvider}
+      />
+
+      <ComfyUISettingsModal
+        isOpen={isComfyModalOpen}
+        onClose={() => setIsComfyModalOpen(false)}
+        config={comfyConfig}
+        scriptMood={videoScript?.overallMood || moodPreset}
+        scriptTitle={videoScript?.title || ''}
+        analysis={videoScript?.analysis}
+        scenes={videoScript?.scenes || []}
+        onSaveConfig={handleSaveComfyConfig}
       />
     </div>
   );

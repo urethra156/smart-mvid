@@ -136,13 +136,35 @@ export async function generateSceneThumbnailWithImagen(
         }
       }
     } catch (fallbackError: any) {
-      console.error("Gemini Flash Image fallback also failed:", fallbackError);
+      const rawErrorMsg = String(fallbackError?.message || imagenError?.message || fallbackError || imagenError || "Image generation service error.");
+      console.warn("Cloud image generation service notification:", rawErrorMsg);
       
-      const rawErrorMsg = fallbackError?.message || imagenError?.message || "Image generation service error.";
-      if (rawErrorMsg.includes("PERMISSION_DENIED") || rawErrorMsg.includes("403")) {
+      if (
+        rawErrorMsg.includes("RESOURCE_EXHAUSTED") ||
+        rawErrorMsg.includes("429") ||
+        rawErrorMsg.toLowerCase().includes("prepayment credits") ||
+        rawErrorMsg.toLowerCase().includes("quota") ||
+        rawErrorMsg.toLowerCase().includes("rate limit")
+      ) {
+        throw new Error("IMAGEN_QUOTA_EXHAUSTED");
+      }
+
+      if (
+        rawErrorMsg.includes("PERMISSION_DENIED") || 
+        rawErrorMsg.includes("403") ||
+        rawErrorMsg.toLowerCase().includes("caller does not have permission")
+      ) {
         throw new Error("IMAGEN_PERMISSION_DENIED");
       }
-      throw new Error(`Imagen Generation Failed: ${rawErrorMsg}`);
+
+      if (
+        rawErrorMsg.toLowerCase().includes("api_key") || 
+        rawErrorMsg.toLowerCase().includes("requested entity was not found")
+      ) {
+        throw new Error("API_KEY_NOT_FOUND");
+      }
+
+      throw new Error(`Imagen Generation Notice: ${rawErrorMsg}`);
     }
   }
 

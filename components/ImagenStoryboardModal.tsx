@@ -10,7 +10,8 @@ import {
   FilmIcon,
   CheckCircle2Icon,
   ViewfinderIcon,
-  ClockIcon
+  ClockIcon,
+  InformationCircleIcon
 } from './icons/Icons';
 import { 
   generateSceneThumbnailWithImagen, 
@@ -91,10 +92,26 @@ export const ImagenStoryboardModal: React.FC<ImagenStoryboardModalProps> = ({
       );
       onUpdateScenes(updatedScenes);
     } catch (err: any) {
-      console.error(`Error generating thumbnail for scene ${scene.sceneNumber}:`, err);
+      console.warn(`Thumbnail generation notice for scene ${scene.sceneNumber}:`, err);
       const errMsg = err?.message || 'Failed to generate thumbnail';
       
-      // If permission or key error, provide procedural fallback option
+      // Auto-fallback to procedural storyboard concept artwork
+      try {
+        const fallbackUrl = generateProceduralStoryboardArtwork(
+          scene,
+          script.overallMood,
+          script.analysis?.suggestedColorPalette
+        );
+        const updatedScenes = script.scenes.map(s => 
+          s.sceneNumber === scene.sceneNumber 
+            ? { ...s, thumbnailUrl: fallbackUrl, thumbnailPrompt: 'Procedural Concept Artwork' } 
+            : s
+        );
+        onUpdateScenes(updatedScenes);
+      } catch (procErr) {
+        console.warn("Could not generate procedural fallback:", procErr);
+      }
+      
       setBatchErrors(prev => ({
         ...prev,
         [scene.sceneNumber]: errMsg
@@ -406,15 +423,53 @@ export const ImagenStoryboardModal: React.FC<ImagenStoryboardModalProps> = ({
 
                     {/* Error Banner */}
                     {sceneError && (
-                      <div className="p-2 bg-amber-950/80 border border-amber-800 text-amber-200 rounded-md text-[11px] space-y-1">
-                        <p className="font-semibold">Generation notice:</p>
-                        <p className="line-clamp-2">{sceneError}</p>
-                        <button
-                          onClick={() => handleGenerateProceduralFallback(scene)}
-                          className="mt-1 underline text-cyan-300 hover:text-cyan-200"
-                        >
-                          Use procedural concept artwork fallback
-                        </button>
+                      <div className="p-2.5 bg-amber-950/80 border border-amber-800 text-amber-200 rounded-md text-[11px] space-y-1.5">
+                        <p className="font-semibold flex items-center gap-1.5 text-amber-300">
+                          <InformationCircleIcon className="w-3.5 h-3.5 flex-shrink-0" />
+                          {sceneError.includes('IMAGEN_QUOTA_EXHAUSTED') || sceneError.includes('429') || sceneError.includes('RESOURCE_EXHAUSTED') || sceneError.toLowerCase().includes('depleted')
+                            ? 'AI Studio Quota / Credits Depleted'
+                            : 'Generation Notice'}
+                        </p>
+                        <p className="text-slate-300 text-[10px] leading-snug">
+                          {sceneError.includes('IMAGEN_QUOTA_EXHAUSTED') || sceneError.includes('429') || sceneError.includes('RESOURCE_EXHAUSTED') || sceneError.toLowerCase().includes('depleted')
+                            ? 'Project credits are depleted. An instant concept artboard has been created so your storyboard is complete.'
+                            : sceneError}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                          {typeof window !== 'undefined' && window.aistudio?.openSelectKey && (
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await window.aistudio?.openSelectKey?.();
+                                  handleGenerateSingleThumbnail(scene);
+                                } catch (e) {
+                                  console.warn(e);
+                                }
+                              }}
+                              className="px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-bold"
+                            >
+                              Change Key
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleGenerateProceduralFallback(scene)}
+                            className="text-[10px] text-cyan-300 hover:text-cyan-200 underline"
+                          >
+                            Refresh Artboard
+                          </button>
+                          <button
+                            onClick={() => {
+                              setBatchErrors(prev => {
+                                const copy = { ...prev };
+                                delete copy[scene.sceneNumber];
+                                return copy;
+                              });
+                            }}
+                            className="text-[10px] text-slate-400 hover:text-slate-200"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
                       </div>
                     )}
 

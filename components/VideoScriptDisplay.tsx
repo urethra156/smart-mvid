@@ -8,7 +8,8 @@ import { PromptLibraryModal } from './PromptLibraryModal';
 import { ComfyUIBatchModal } from './ComfyUIBatchModal';
 import { ScriptSummaryPanel } from './ScriptSummaryPanel';
 import { SongEnergyTimelineChart } from './SongEnergyTimelineChart';
-import { ComfyUIConfig, DEFAULT_COMFYUI_CONFIG } from '../services/comfyuiService';
+import { ComfyUIWorkflowAutoSetupCard } from './ComfyUIWorkflowAutoSetupCard';
+import { ComfyUIConfig, DEFAULT_COMFYUI_CONFIG, loadComfyUiConfig, saveComfyUiConfig } from '../services/comfyuiService';
 import {
   generateJsonExport,
   generateStandardCsvExport,
@@ -114,8 +115,8 @@ const VideoScriptDisplay: React.FC<VideoScriptDisplayProps> = ({
   const [isPromptLibraryOpen, setIsPromptLibraryOpen] = useState(false);
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [promptLibraryTargetScene, setPromptLibraryTargetScene] = useState<number | null>(null);
-  const [engineMode, setEngineMode] = useState<'veo' | 'comfyui'>('veo');
-  const [comfyConfig, setComfyConfig] = useState<ComfyUIConfig>(DEFAULT_COMFYUI_CONFIG);
+  const [engineMode, setEngineMode] = useState<'veo' | 'comfyui'>('comfyui');
+  const [comfyConfig, setComfyConfig] = useState<ComfyUIConfig>(() => loadComfyUiConfig());
 
   const handleEdit = (sceneNumber: number) => {
     setEditingSceneId(sceneNumber);
@@ -291,6 +292,25 @@ const VideoScriptDisplay: React.FC<VideoScriptDisplayProps> = ({
         }}
       />
 
+      {/* ComfyUI AI Intelligence & Auto Workflow Setup Card */}
+      <ComfyUIWorkflowAutoSetupCard
+        script={script}
+        comfyConfig={comfyConfig}
+        onUpdateConfig={(newCfg) => {
+          setComfyConfig(newCfg);
+          saveComfyUiConfig(newCfg);
+        }}
+        onUpdateScenes={(newScenes) => {
+          onUpdateScenes(newScenes);
+          if (onSaveScript) onSaveScript();
+        }}
+        onOpenSettings={() => setIsComfySettingsOpen(true)}
+        onOpenBatchModal={() => {
+          setEngineMode('comfyui');
+          setIsBatchModalOpen(true);
+        }}
+      />
+
       {/* Recharts Song Energy & Audio Waveform Dynamic Timeline */}
       <SongEnergyTimelineChart script={script} audioFile={audioFile} />
 
@@ -333,6 +353,8 @@ const VideoScriptDisplay: React.FC<VideoScriptDisplayProps> = ({
         config={comfyConfig}
         scriptMood={script.overallMood}
         scriptTitle={script.title}
+        analysis={script.analysis}
+        scenes={script.scenes}
         onSaveConfig={(newCfg) => setComfyConfig(newCfg)}
       />
 
