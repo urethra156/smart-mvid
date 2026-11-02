@@ -1,8 +1,6 @@
 {
   "name": "Copy of AI Music Video Director",
-  "description": "Your AI-powered creative partner for music videos. Deeply analyzes audio tracks, lyrics, and beats to generate scene breakdowns, Imagen 3 visual storyboard thumbnails, AI-powered ComfyUI workflow architecture generator (Wan 2.1, Hunyuan, AnimateDiff), and VEO prompts with Ollama, Open Code, and Gemini.",
+  "description": "Your AI-powered creative partner for music videos. This tool deeply analyzes your song—from its musical key to lyrical themes—to craft a bespoke video script. It generates everything from scene-by-scene breakdowns to ready-to-use VEO prompts, turning your audio into a visual masterpiece.",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": []
 }

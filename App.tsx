@@ -1,21 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { generateVideoScript, validateApiKey } from './services/geminiService';
-import { generateLocalVideoScript } from './services/localScriptService';
-import { generateScriptWithOllamaOrOpenCode, loadOllamaConfig, saveOllamaConfig, DEFAULT_OLLAMA_CONFIG } from './services/ollamaService';
-import { ComfyUIConfig, ComfyUIStatus, loadComfyUiConfig, saveComfyUiConfig, checkComfyUiStatus } from './services/comfyuiService';
-import { COMFYUI_ARCHITECTURES } from './services/aiComfyWorkflowService';
-import { VideoScript, MoodPreset, Scene, LyricLine, ElementWithImage, ConsistentElement, LlmProvider, OllamaConfig } from './types';
+import { VideoScript, MoodPreset, Scene, LyricLine, ElementWithImage, ConsistentElement } from './types';
 import LyricsInput from './components/LyricsInput';
 import ElementUploader from './components/ElementUploader';
 import VideoScriptDisplay from './components/VideoScriptDisplay';
-import { OllamaSettingsModal } from './components/OllamaSettingsModal';
-import { ComfyUISettingsModal } from './components/ComfyUISettingsModal';
 import Loader from './components/Loader';
-import { ResetConfirmModal } from './components/ResetConfirmModal';
-import { FilmIcon, KeyIcon, CpuIcon, CodeBracketIcon, SlidersIcon, SparklesIcon, BoltIcon } from './components/icons/Icons';
+import { FilmIcon, KeyIcon } from './components/icons/Icons';
 
 const LOCAL_STORAGE_KEY = 'ai-music-video-script';
-const LLM_PROVIDER_STORAGE_KEY = 'ai_music_video_llm_provider';
 
 /**
  * Normalizes the timings of a generated video script to enforce 8-second intervals.
@@ -148,83 +140,43 @@ const App: React.FC = () => {
   const [videoScript, setVideoScript] = useState<VideoScript | null>(null);
   const [elementsWithImages, setElementsWithImages] = useState<ElementWithImage[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [loadingStatusText, setLoadingStatusText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [moodPreset, setMoodPreset] = useState<MoodPreset>('Cinematic');
   const [isApiKeySelected, setIsApiKeySelected] = useState<boolean>(false);
   const [isCheckingApiKey, setIsCheckingApiKey] = useState<boolean>(true);
-  const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
 
-  // LLM Provider state (Gemini Cloud vs Ollama Local vs Open Code)
-  const [llmProvider, setLlmProvider] = useState<LlmProvider>(() => {
-    try {
-      const saved = localStorage.getItem(LLM_PROVIDER_STORAGE_KEY) as LlmProvider;
-      if (saved === 'gemini' || saved === 'ollama' || saved === 'opencode') {
-        return saved;
-      }
-    } catch (e) {}
-    return 'gemini';
-  });
 
-  const [ollamaConfig, setOllamaConfig] = useState<OllamaConfig>(() => loadOllamaConfig());
-  const [isOllamaModalOpen, setIsOllamaModalOpen] = useState<boolean>(false);
-
-  // ComfyUI Video Generation State
-  const [comfyConfig, setComfyConfig] = useState<ComfyUIConfig>(() => loadComfyUiConfig());
-  const [isComfyModalOpen, setIsComfyModalOpen] = useState<boolean>(false);
-  const [comfyStatus, setComfyStatus] = useState<ComfyUIStatus | null>(null);
-  const [videoTarget, setVideoTarget] = useState<'comfyui' | 'veo'>('comfyui');
-
-  // Save LLM provider changes
-  const handleSelectProvider = (provider: LlmProvider) => {
-    setLlmProvider(provider);
-    try {
-      localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, provider);
-    } catch (e) {}
-  };
-
-  const handleSaveOllamaConfig = (newConfig: OllamaConfig) => {
-    setOllamaConfig(newConfig);
-    saveOllamaConfig(newConfig);
-  };
-
-  const handleSaveComfyConfig = (newConfig: ComfyUIConfig) => {
-    setComfyConfig(newConfig);
-    saveComfyUiConfig(newConfig);
-  };
-
-  const handleCheckComfyStatus = useCallback(async (url?: string) => {
-    const targetUrl = url || comfyConfig.serverUrl;
-    try {
-      const res = await checkComfyUiStatus(targetUrl);
-      setComfyStatus(res);
-    } catch (e) {
-      setComfyStatus({ online: false, message: 'Could not connect to ComfyUI' });
-    }
-  }, [comfyConfig.serverUrl]);
-
-  // Check ComfyUI server status on mount and config change
+  // Effect to check and validate API key on mount
   useEffect(() => {
-    handleCheckComfyStatus();
-  }, [handleCheckComfyStatus]);
-
-
-  // Effect to check API key on mount without blocking app access
-  useEffect(() => {
-    const checkKey = async () => {
+    const checkAndValidateKey = async () => {
+      setIsCheckingApiKey(true);
+      setError(null);
       try {
-        if (window.aistudio?.hasSelectedApiKey) {
-          const keyIsSelected = await window.aistudio.hasSelectedApiKey();
-          setIsApiKeySelected(keyIsSelected);
+        const keyIsSelected = await window.aistudio.hasSelectedApiKey();
+        if (keyIsSelected) {
+          // A key is selected, now we must validate it with a test call
+          const keyIsValid = await validateApiKey();
+          if (keyIsValid) {
+            setIsApiKeySelected(true);
+          } else {
+            // Key is selected but invalid (e.g., permissions, quota)
+            setIsApiKeySelected(false);
+            setError("Your selected API key appears to be invalid or lacks the necessary permissions. Please select a valid key to continue.");
+          }
+        } else {
+          // No key has been selected yet
+          setIsApiKeySelected(false);
         }
       } catch (e) {
-        console.warn("Optional API key check failed, proceeding in local offline mode:", e);
+        console.error("Error during API key check/validation:", e);
+        setIsApiKeySelected(false);
+        setError("An error occurred while verifying your API key. Please try selecting one again.");
       } finally {
         setIsCheckingApiKey(false);
       }
     };
-    checkKey();
-  }, []);
+    checkAndValidateKey();
+  }, []); // Run only on mount
 
   // Effect to load script from localStorage on initial render
   useEffect(() => {
@@ -277,8 +229,7 @@ const App: React.FC = () => {
     setError("Your API key is invalid or has insufficient permissions for video generation. Please select a valid key.");
   }, []);
 
-  const handleAnalyze = useCallback(async (forcedProvider?: LlmProvider) => {
-    const activeProv = forcedProvider || llmProvider;
+  const handleAnalyze = useCallback(async () => {
     if (!lyrics.trim() && !audioFile) {
       setError('Please enter lyrics or upload an audio file.');
       return;
@@ -290,52 +241,11 @@ const App: React.FC = () => {
     }
     
     setIsLoading(true);
-    setLoadingStatusText(
-      activeProv === 'ollama'
-        ? `Connecting to Ollama (${ollamaConfig.model}) at ${ollamaConfig.endpoint}...`
-        : activeProv === 'opencode'
-        ? `Connecting to Open Code at ${ollamaConfig.openCodeEndpoint}...`
-        : 'Connecting to Google Gemini API...'
-    );
     setError(null);
     setVideoScript(null);
 
     try {
-      let rawScript: VideoScript;
-
-      if (activeProv === 'ollama' || activeProv === 'opencode') {
-        try {
-          rawScript = await generateScriptWithOllamaOrOpenCode(
-            { lyrics, audioFile },
-            totalSeconds,
-            moodPreset,
-            ollamaConfig,
-            (status) => setLoadingStatusText(status)
-          );
-        } catch (localLlmErr: any) {
-          console.warn(`Local LLM (${activeProv}) generation failed:`, localLlmErr);
-          const errorMsg = localLlmErr?.message || 'Local LLM connection failed.';
-          
-          if (errorMsg.includes('Failed to fetch') || errorMsg.includes('CORS') || errorMsg.includes('NetworkError')) {
-            throw new Error(
-              `Cannot connect to ${activeProv === 'ollama' ? 'Ollama' : 'Open Code'} server at ${
-                activeProv === 'ollama' ? ollamaConfig.endpoint : ollamaConfig.openCodeEndpoint
-              }.\n\nBrowser Security: When running over HTTPS, requests to unencrypted local HTTP servers are blocked. Use an HTTPS tunnel (e.g. ngrok http 11434) or switch to Gemini Cloud / Built-in Director Engine below.`
-            );
-          } else {
-            throw localLlmErr;
-          }
-        }
-      } else {
-        try {
-          rawScript = await generateVideoScript({ lyrics, audioFile }, totalSeconds, moodPreset);
-        } catch (geminiError) {
-          console.warn('Gemini script generation failed, falling back to Local Music Video Director Engine:', geminiError);
-          setLoadingStatusText('Synthesizing script using internal cinematic director engine...');
-          rawScript = await generateLocalVideoScript({ lyrics, audioFile }, totalSeconds, moodPreset);
-        }
-      }
-
+      const rawScript = await generateVideoScript({ lyrics, audioFile }, totalSeconds, moodPreset);
       const normalizedScript = normalizeScriptTimings(rawScript, totalSeconds);
       setVideoScript(normalizedScript);
 
@@ -360,9 +270,8 @@ const App: React.FC = () => {
       setAppStep('input');
     } finally {
       setIsLoading(false);
-      setLoadingStatusText(null);
     }
-  }, [lyrics, audioFile, totalSeconds, moodPreset, llmProvider, ollamaConfig]);
+  }, [lyrics, audioFile, totalSeconds, moodPreset]);
 
   const handleElementsSubmitted = useCallback((updatedElements: ElementWithImage[]) => {
     setElementsWithImages(updatedElements);
@@ -392,37 +301,26 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   }, [videoScript]);
 
-  const handleConfirmReset = useCallback(() => {
-    try {
-      localStorage.removeItem(LOCAL_STORAGE_KEY);
-    } catch (e) {
-      console.error("Failed to clear local storage:", e);
-    }
-    setVideoScript(null);
-    setLyrics('');
-    setAudioFile(null);
-    setSongLength({ minutes: '03', seconds: '30' });
-    setMoodPreset('Cinematic');
-    setError(null);
-    setElementsWithImages([]);
-    setAppStep('input');
-    setIsResetModalOpen(false);
-  }, []);
-
   const handleStartNew = useCallback(() => {
-    setIsResetModalOpen(true);
+    if (window.confirm("Are you sure you want to start a new script? Your current work will be cleared and cannot be recovered.")) {
+        setVideoScript(null);
+        setLyrics('');
+        setAudioFile(null);
+        setSongLength({ minutes: '03', seconds: '30' });
+        setMoodPreset('Cinematic');
+        setError(null);
+        setElementsWithImages([]);
+        setAppStep('input');
+    }
   }, []);
 
   const renderContent = () => {
     if (isLoading) {
        return (
-         <div className="flex flex-col items-center justify-center text-center p-8 bg-slate-800/40 border border-slate-700/60 rounded-2xl shadow-xl">
+         <div className="flex flex-col items-center justify-center text-center p-8">
            <Loader />
-           <p className="mt-4 text-lg font-semibold text-slate-200 animate-pulse">
-             {loadingStatusText || 'Analyzing your song and storyboarding your vision...'}
-           </p>
-           <p className="text-xs text-slate-400 mt-2 font-mono">
-             Engine: {llmProvider === 'ollama' ? `Ollama (${ollamaConfig.model})` : llmProvider === 'opencode' ? `Open Code (${ollamaConfig.openCodeModel})` : 'Google Gemini 2.5'}
+           <p className="mt-4 text-lg text-slate-300 animate-pulse">
+             Analyzing your song and storyboarding your vision...
            </p>
          </div>
        );
@@ -433,26 +331,16 @@ const App: React.FC = () => {
             return (
                 <div className="bg-slate-800/50 rounded-lg shadow-2xl p-6 border border-slate-700 backdrop-blur-sm mb-8">
                     <LyricsInput
-                      lyrics={lyrics}
-                      setLyrics={setLyrics}
-                      audioFile={audioFile}
-                      setAudioFile={setAudioFile}
-                      songLength={songLength}
-                      setSongLength={setSongLength}
-                      selectedMood={moodPreset}
-                      setSelectedMood={setMoodPreset}
-                      onSubmit={handleAnalyze}
-                      isLoading={isLoading}
-                      llmProvider={llmProvider}
-                      onSelectProvider={handleSelectProvider}
-                      ollamaConfig={ollamaConfig}
-                      onOpenOllamaSettings={() => setIsOllamaModalOpen(true)}
-                      comfyConfig={comfyConfig}
-                      onUpdateComfyConfig={handleSaveComfyConfig}
-                      onOpenComfySettings={() => setIsComfyModalOpen(true)}
-                      comfyStatus={comfyStatus}
-                      videoTarget={videoTarget}
-                      setVideoTarget={setVideoTarget}
+                    lyrics={lyrics}
+                    setLyrics={setLyrics}
+                    audioFile={audioFile}
+                    setAudioFile={setAudioFile}
+                    songLength={songLength}
+                    setSongLength={setSongLength}
+                    selectedMood={moodPreset}
+                    setSelectedMood={setMoodPreset}
+                    onSubmit={handleAnalyze}
+                    isLoading={isLoading}
                     />
                 </div>
             );
@@ -472,15 +360,11 @@ const App: React.FC = () => {
                     <div className="mt-10">
                     <VideoScriptDisplay 
                         script={videoScript}
-                        audioFile={audioFile}
                         elementsWithImages={elementsWithImages} 
                         onUpdateScenes={handleUpdateScenes}
                         onSaveScript={handleSaveScript}
                         onStartNew={handleStartNew}
                         onApiKeyError={handleApiKeyError}
-                        llmProvider={llmProvider}
-                        ollamaConfig={ollamaConfig}
-                        onOpenOllamaSettings={() => setIsOllamaModalOpen(true)}
                     />
                     </div>
                  )
@@ -493,175 +377,83 @@ const App: React.FC = () => {
     }
   };
 
-  const currentComfyArch = COMFYUI_ARCHITECTURES[comfyConfig.workflowType] || COMFYUI_ARCHITECTURES.wan2_1;
+  if (isCheckingApiKey) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <Loader />
+      </div>
+    );
+  }
+
+  if (!isApiKeySelected) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-200 font-sans p-4 sm:p-6 lg:p-8 flex items-center justify-center">
+        <div className="max-w-xl mx-auto text-center bg-slate-800/50 rounded-lg shadow-2xl p-8 border border-slate-700">
+          <div className="flex items-center justify-center gap-4 mb-4">
+              <KeyIcon className="w-10 h-10 text-indigo-400" />
+              <h1 className="text-3xl sm:text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
+                API Key Required
+              </h1>
+          </div>
+          <p className="text-slate-400 text-lg mb-6">
+            To generate videos with the VEO model, you must select a Google AI Studio API key.
+          </p>
+          <button
+            onClick={handleSelectKey}
+            className="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 focus:ring-offset-slate-900 transition-all duration-200 group"
+          >
+            <KeyIcon className="w-5 h-5 mr-2 -ml-1" />
+            Select Your API Key
+          </button>
+          <p className="text-xs text-slate-500 mt-4">
+             By proceeding, you acknowledge that video generation may incur costs.
+             Please review the <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="underline hover:text-indigo-400">billing documentation</a> for details.
+          </p>
+          {error && (
+            <div className="mt-4 text-sm text-red-400 p-3 bg-red-900/30 border border-red-700 rounded-md">
+              {error}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200 font-sans p-4 sm:p-6 lg:p-8">
       <div className="max-w-4xl mx-auto">
-        <header className="text-center mb-8 relative">
+        <header className="text-center mb-8">
           <div className="flex items-center justify-center gap-4 mb-2">
             <FilmIcon className="w-10 h-10 text-indigo-400" />
-            <h1 className="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-cyan-300 to-amber-300">
+            <h1 className="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
               AI Music Video Director
             </h1>
           </div>
-          <p className="text-slate-400 text-base sm:text-lg max-w-2xl mx-auto">
-            Deeply analyze any song and generate complete storyboard shotlists with auto-tuned <span className="text-cyan-300 font-semibold">ComfyUI Workflows</span> (Wan 2.1, HunyuanVideo, AnimateDiff) &amp; <span className="text-indigo-300 font-semibold">Google VEO</span> prompts.
+          <p className="text-slate-400 text-lg">
+            Deeply analyze any song and generate a complete, cinematic music video script.
           </p>
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-            {/* ComfyUI Model Quick Button */}
-            <button
-              onClick={() => setIsComfyModalOpen(true)}
-              className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold border bg-slate-950 text-cyan-300 border-cyan-700/80 hover:bg-slate-900 hover:border-cyan-400 shadow-sm transition-all group"
-              title="Open ComfyUI Model Architect, VRAM tuner, and server connection"
-            >
-              <BoltIcon className="w-3.5 h-3.5 mr-1.5 text-cyan-400 group-hover:scale-110 transition-transform" />
-              <span>
-                ComfyUI: <strong>{currentComfyArch.name}</strong>
-              </span>
-              <span className={`ml-2 w-2 h-2 rounded-full ${comfyStatus?.online ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]' : 'bg-amber-400'}`} />
-              <SlidersIcon className="w-3 h-3 ml-1.5 text-slate-400 group-hover:text-white" />
-            </button>
-
-            {/* Scriptwriter LLM Switcher */}
-            <button
-              onClick={() => setIsOllamaModalOpen(true)}
-              className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
-                llmProvider === 'ollama'
-                  ? 'bg-cyan-950/80 text-cyan-300 border-cyan-700 shadow-sm'
-                  : llmProvider === 'opencode'
-                  ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700 shadow-sm'
-                  : 'bg-indigo-950/80 text-indigo-300 border-indigo-700 shadow-sm'
-              }`}
-              title="Click to configure Ollama, Open Code, and local endpoints"
-            >
-              {llmProvider === 'ollama' ? (
-                <CpuIcon className="w-3.5 h-3.5 mr-1.5 text-cyan-400" />
-              ) : llmProvider === 'opencode' ? (
-                <CodeBracketIcon className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />
-              ) : (
-                <SparklesIcon className="w-3.5 h-3.5 mr-1.5 text-amber-400" />
-              )}
-              <span>
-                LLM: {llmProvider === 'ollama' ? `Ollama (${ollamaConfig.model})` : llmProvider === 'opencode' ? `Open Code (${ollamaConfig.openCodeModel})` : 'Gemini Cloud'}
-              </span>
-              <SlidersIcon className="w-3 h-3 ml-1.5 text-slate-400 hover:text-white" />
-            </button>
-
-            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-950 text-emerald-300 border border-emerald-800">
-              ✓ Local Offline Engine Ready
-            </span>
-
-            {window.aistudio?.openSelectKey && (
-              <button
-                onClick={handleSelectKey}
-                className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-                title="Connect optional Gemini API key for cloud VEO video generation"
-              >
-                <KeyIcon className="w-3 h-3 mr-1 text-amber-400" />
-                {isApiKeySelected ? 'API Key Connected' : 'Optional: Connect API Key'}
-              </button>
-            )}
-          </div>
         </header>
 
         <main>
           {renderContent()}
 
           {error && !isLoading && appStep === 'input' && (
-            <div className="bg-red-900/50 border border-red-700 text-red-200 p-4 rounded-lg relative mt-4 shadow-lg" role="alert">
+            <div className="bg-red-900/50 border border-red-700 text-red-200 p-4 rounded-lg relative mt-4" role="alert">
               <div className="flex">
                 <div className="py-1">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-red-400 mr-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                 </div>
-                <div className="flex-1">
-                  <p className="font-bold text-red-300">Script Generation Notice</p>
-                  <p className="text-sm mt-1 whitespace-pre-wrap">{error}</p>
-                  {(error.includes('Ollama') || error.includes('Open Code') || error.includes('CORS')) && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        onClick={async () => {
-                          setError(null);
-                          setIsLoading(true);
-                          setLoadingStatusText('Synthesizing script using internal cinematic director engine...');
-                          try {
-                            const rawScript = await generateLocalVideoScript({ lyrics, audioFile }, totalSeconds, moodPreset);
-                            const normalizedScript = normalizeScriptTimings(rawScript, totalSeconds);
-                            setVideoScript(normalizedScript);
-                            const elements = normalizedScript.consistentElements;
-                            if (elements && (elements.characters.length > 0 || elements.props.length > 0)) {
-                              const characters: ElementWithImage[] = elements.characters.map(c => ({...c, type: 'character'}));
-                              const props: ElementWithImage[] = elements.props.map(p => ({...p, type: 'prop'}));
-                              setElementsWithImages([...characters, ...props]);
-                              setAppStep('elements');
-                            } else {
-                              setAppStep('script');
-                              setElementsWithImages([]);
-                            }
-                          } catch (e: any) {
-                            setError(e?.message || 'Failed to generate script with built-in director.');
-                          } finally {
-                            setIsLoading(false);
-                            setLoadingStatusText(null);
-                          }
-                        }}
-                        className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold transition-all shadow flex items-center gap-1.5"
-                      >
-                        <span>🎬 Generate with Built-in Director Engine</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          handleSelectProvider('gemini');
-                          setError(null);
-                          handleAnalyze('gemini');
-                        }}
-                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition-all shadow flex items-center gap-1.5"
-                      >
-                        <SparklesIcon className="w-3.5 h-3.5 text-amber-300" />
-                        <span>Generate with Gemini Cloud AI</span>
-                      </button>
-                      <button
-                        onClick={() => setIsOllamaModalOpen(true)}
-                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 rounded-lg text-xs font-medium transition-all"
-                      >
-                        Open Local Engine Settings
-                      </button>
-                    </div>
-                  )}
+                <div>
+                  <p className="font-bold text-red-300">Analysis Failed</p>
+                  <p className="text-sm mt-1">{error}</p>
                 </div>
               </div>
             </div>
           )}
         </main>
       </div>
-
-      <ResetConfirmModal
-        isOpen={isResetModalOpen}
-        onClose={() => setIsResetModalOpen(false)}
-        onConfirmReset={handleConfirmReset}
-      />
-
-      <OllamaSettingsModal
-        isOpen={isOllamaModalOpen}
-        onClose={() => setIsOllamaModalOpen(false)}
-        config={ollamaConfig}
-        onSaveConfig={handleSaveOllamaConfig}
-        activeProvider={llmProvider}
-        onSelectProvider={handleSelectProvider}
-      />
-
-      <ComfyUISettingsModal
-        isOpen={isComfyModalOpen}
-        onClose={() => setIsComfyModalOpen(false)}
-        config={comfyConfig}
-        scriptMood={videoScript?.overallMood || moodPreset}
-        scriptTitle={videoScript?.title || ''}
-        analysis={videoScript?.analysis}
-        scenes={videoScript?.scenes || []}
-        onSaveConfig={handleSaveComfyConfig}
-      />
     </div>
   );
 };

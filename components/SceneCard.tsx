@@ -1,37 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Scene, LyricLine, ElementWithImage, ConsistentElements, ColorSuggestion, LlmProvider, OllamaConfig } from '../types';
-import { 
-  ClipboardIcon, 
-  CheckIcon, 
-  CameraIcon, 
-  ViewfinderIcon, 
-  ClockIcon, 
-  PencilIcon, 
-  InformationCircleIcon, 
-  FilmIcon, 
-  ArrowPathIcon, 
-  SwatchIcon, 
-  SparklesIcon, 
-  BoltIcon, 
-  PlayIcon,
-  PhotoIcon,
-  DownloadIcon,
-  CheckCircle2Icon,
-  XCircleIcon,
-  CpuIcon,
-  CodeBracketIcon,
-  KeyIcon
-} from './icons/Icons';
+import { Scene, LyricLine, ElementWithImage } from '../types';
+import { ClipboardIcon, CheckIcon, CameraIcon, ViewfinderIcon, ClockIcon, PencilIcon, InformationCircleIcon, FilmIcon, ArrowPathIcon } from './icons/Icons';
 import { generateVeoPrompt, generateVideoFromPrompt } from '../services/geminiService';
-import { ComfyUIConfig, generateVideoWithComfyUI, downloadComfyUiWorkflowJson, buildComfyUiApiPayload } from '../services/comfyuiService';
-import { downloadComfyUiVisualCanvasJsonFile, optimizeSceneWorkflow, COMFYUI_ARCHITECTURES } from '../services/aiComfyWorkflowService';
-import { generateProceduralSceneVideo } from '../utils/motionVideoGenerator';
-import { 
-  generateSceneThumbnailWithImagen, 
-  buildCinematicThumbnailPrompt, 
-  generateProceduralStoryboardArtwork 
-} from '../services/imagenService';
-import { enhanceScenePromptWithOllama } from '../services/ollamaService';
 import Loader from './Loader';
 
 interface SceneCardProps {
@@ -39,17 +9,10 @@ interface SceneCardProps {
   isEditing: boolean;
   overallMood: string;
   elementsWithImages: ElementWithImage[];
-  consistentElements?: ConsistentElements;
-  colorPalette?: ColorSuggestion[];
-  engineMode?: 'veo' | 'comfyui';
-  comfyConfig?: ComfyUIConfig;
-  llmProvider?: LlmProvider;
-  ollamaConfig?: OllamaConfig;
   onEdit: () => void;
   onSave: (scene: Scene) => void;
   onCancel: () => void;
   onApiKeyError: () => void;
-  onOpenPromptLibrary?: (sceneNumber: number) => void;
 }
 
 const formatTime = (totalSeconds: number | undefined): string => {
@@ -212,25 +175,8 @@ const formatErrorMessage = (message: string): React.ReactNode => {
 };
 
 
-const SceneCard: React.FC<SceneCardProps> = ({
-  scene,
-  isEditing,
-  onEdit,
-  onSave,
-  onCancel,
-  overallMood,
-  elementsWithImages,
-  consistentElements,
-  colorPalette,
-  engineMode = 'veo',
-  comfyConfig,
-  llmProvider = 'gemini',
-  ollamaConfig,
-  onApiKeyError,
-  onOpenPromptLibrary,
-}) => {
+const SceneCard: React.FC<SceneCardProps> = ({ scene, isEditing, onEdit, onSave, onCancel, overallMood, elementsWithImages, onApiKeyError }) => {
   const [copied, setCopied] = useState(false);
-  const [copiedComfy, setCopiedComfy] = useState(false);
   const [editedScene, setEditedScene] = useState<Scene>(scene);
   const [lyricsString, setLyricsString] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -241,16 +187,6 @@ const SceneCard: React.FC<SceneCardProps> = ({
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
 
-  // State for Imagen thumbnail generation
-  const [isGeneratingThumbnail, setIsGeneratingThumbnail] = useState(false);
-  const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
-  const [thumbnailError, setThumbnailError] = useState<string | null>(null);
-  const [showThumbnailLightbox, setShowThumbnailLightbox] = useState(false);
-  const [previewTab, setPreviewTab] = useState<'thumbnail' | 'video'>(scene.thumbnailUrl ? 'thumbnail' : 'video');
-  const [isEditingCustomThumbnailPrompt, setIsEditingCustomThumbnailPrompt] = useState(false);
-  const [customThumbnailPrompt, setCustomThumbnailPrompt] = useState('');
-  const [autoTuneToast, setAutoTuneToast] = useState<string | null>(null);
-
   useEffect(() => {
     // When the component receives a new scene or the editing state changes, reset its internal state.
     setEditedScene(scene);
@@ -260,106 +196,10 @@ const SceneCard: React.FC<SceneCardProps> = ({
     }
   }, [scene, isEditing]);
 
-  const handleAiAutoTuneScene = () => {
-    const opt = optimizeSceneWorkflow(scene, overallMood, undefined, 'mid_12gb', comfyConfig);
-    const updated = {
-      ...scene,
-      veoPrompt: opt.enhancedPrompt,
-      cameraAngle: scene.cameraAngle || opt.cameraMovementTag,
-    };
-    onSave(updated);
-    setAutoTuneToast(`AI Auto-tuned prompt for ${opt.architecture.name}!`);
-    setTimeout(() => setAutoTuneToast(null), 4000);
-  };
-
-  const handleGenerateThumbnail = async (overridePrompt?: string) => {
-    setIsGeneratingThumbnail(true);
-    setThumbnailError(null);
-    setThumbnailStatus('Synthesizing cinematic thumbnail with Google Imagen 3...');
-
-    const promptToUse = overridePrompt || (
-      scene.thumbnailPrompt || 
-      buildCinematicThumbnailPrompt(scene, overallMood, consistentElements, colorPalette)
-    );
-
-    try {
-      const thumbnailUrl = await generateSceneThumbnailWithImagen(
-        promptToUse,
-        (status) => setThumbnailStatus(status)
-      );
-      const updatedScene = { ...scene, thumbnailUrl, thumbnailPrompt: promptToUse };
-      onSave(updatedScene);
-      setThumbnailError(null);
-      setPreviewTab('thumbnail');
-    } catch (err: any) {
-      console.warn("Thumbnail generation notice:", err);
-      const errMsg = err?.message || "Failed to generate thumbnail";
-      
-      // If cloud image generation fails (e.g. quota depleted, 429, permission),
-      // automatically generate high-fidelity procedural concept artwork
-      // so the director immediately has a visually rich storyboard preview.
-      if (!scene.thumbnailUrl || errMsg.includes('IMAGEN_QUOTA_EXHAUSTED') || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
-        try {
-          const fallbackUrl = generateProceduralStoryboardArtwork(scene, overallMood, colorPalette);
-          const updatedScene = { ...scene, thumbnailUrl: fallbackUrl, thumbnailPrompt: 'Procedural Concept Artwork' };
-          onSave(updatedScene);
-          setPreviewTab('thumbnail');
-        } catch (procErr) {
-          console.warn("Could not generate procedural fallback:", procErr);
-        }
-      }
-      
-      setThumbnailError(errMsg);
-    } finally {
-      setIsGeneratingThumbnail(false);
-      setThumbnailStatus(null);
-    }
-  };
-
-  const handleGenerateProceduralThumbnailArt = () => {
-    try {
-      const thumbnailUrl = generateProceduralStoryboardArtwork(scene, overallMood, colorPalette);
-      const updatedScene = { ...scene, thumbnailUrl, thumbnailPrompt: 'Procedural Concept Art' };
-      onSave(updatedScene);
-      setThumbnailError(null);
-      setPreviewTab('thumbnail');
-    } catch (err: any) {
-      console.error("Failed to generate procedural thumbnail:", err);
-    }
-  };
-
-  const handleDownloadThumbnail = () => {
-    if (!scene.thumbnailUrl) return;
-    const a = document.createElement('a');
-    a.href = scene.thumbnailUrl;
-    a.download = `scene_${scene.sceneNumber}_thumbnail.jpg`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
-
   const handleCopy = () => {
     navigator.clipboard.writeText(scene.veoPrompt);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleCopyComfyJson = () => {
-    if (!comfyConfig) return;
-    const payload = buildComfyUiApiPayload(scene.veoPrompt, comfyConfig);
-    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-    setCopiedComfy(true);
-    setTimeout(() => setCopiedComfy(false), 2000);
-  };
-
-  const handleDownloadComfyWorkflow = () => {
-    if (!comfyConfig) return;
-    downloadComfyUiWorkflowJson(scene.veoPrompt, scene.sceneNumber, comfyConfig);
-  };
-
-  const handleDownloadCanvasWorkflow = () => {
-    if (!comfyConfig) return;
-    downloadComfyUiVisualCanvasJsonFile(scene, comfyConfig, 'Music_Video');
   };
 
   const handleFieldChange = (e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
@@ -369,31 +209,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
   
   const handleLyricsChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setLyricsString(e.target.value);
-  };
-
-  const handleGenerateMotionPreview = async () => {
-    setIsGeneratingVideo(true);
-    setGenerationError(null);
-    setGenerationStatus('Rendering instant procedural motion video in browser...');
-
-    try {
-      const videoUrl = await generateProceduralSceneVideo(
-        scene,
-        overallMood,
-        5,
-        (status) => setGenerationStatus(status)
-      );
-      const updatedSceneWithVideo = { ...scene, videoUrl };
-      onSave(updatedSceneWithVideo);
-      setGenerationError(null);
-    } catch (err: any) {
-      console.error("Motion preview generator error:", err);
-      setGenerationError(err?.message || "Failed to render procedural motion preview.");
-    } finally {
-      setIsGeneratingVideo(false);
-      setGenerationStatus(null);
-    }
-  };
+  }
 
   const handleGenerateVideoClick = async () => {
     setIsGeneratingVideo(true);
@@ -417,34 +233,25 @@ const SceneCard: React.FC<SceneCardProps> = ({
     }
 
     try {
-      let videoUrl = '';
-      if (engineMode === 'comfyui' && comfyConfig) {
-        videoUrl = await generateVideoWithComfyUI(
-          scene.veoPrompt,
-          referenceImage,
-          comfyConfig,
-          (status) => setGenerationStatus(status)
-        );
-      } else {
-        videoUrl = await generateVideoFromPrompt(
-          scene.veoPrompt,
-          referenceImage,
-          (status) => setGenerationStatus(status)
-        );
-      }
+      const videoUrl = await generateVideoFromPrompt(
+        scene.veoPrompt,
+        referenceImage,
+        (status) => setGenerationStatus(status)
+      );
       // Create a new scene object with the video URL
       const updatedSceneWithVideo = { ...scene, videoUrl };
       // Call the onSave prop which will update the parent's state
       onSave(updatedSceneWithVideo);
-    } catch (err: any) {
-      const errMsg = err?.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
-      
-      if (errMsg === 'VEO_PERMISSION_DENIED' || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('caller does not have permission') || errMsg.includes('403')) {
-        setGenerationError('VEO_PERMISSION_DENIED');
-      } else if (errMsg === 'API_KEY_NOT_FOUND' || errMsg.includes('API_KEY')) {
-        setGenerationError("API Key is missing for cloud VEO video generation. You can use ComfyUI mode, export scene prompts, or render instant motion preview.");
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.message === 'API_KEY_NOT_FOUND') {
+          onApiKeyError();
+          // Don't set a local error message, the app will re-render to the key selection screen
+        } else {
+          setGenerationError(err.message);
+        }
       } else {
-        setGenerationError(errMsg || "An unknown error occurred during video generation.");
+        setGenerationError("An unknown error occurred during video generation.");
       }
     } finally {
       setIsGeneratingVideo(false);
@@ -463,25 +270,11 @@ const SceneCard: React.FC<SceneCardProps> = ({
     
     setIsGenerating(true);
     try {
-        let newVeoPrompt = scene.veoPrompt;
-        if ((llmProvider === 'ollama' || llmProvider === 'opencode') && ollamaConfig) {
-          try {
-            newVeoPrompt = await enhanceScenePromptWithOllama(editedScene, overallMood, ollamaConfig);
-          } catch (localErr) {
-            console.warn("Ollama prompt enhancement fallback to Gemini:", localErr);
-            newVeoPrompt = await generateVeoPrompt({
-              description: editedScene.description,
-              cameraAngle: editedScene.cameraAngle,
-              overallMood: overallMood,
-            });
-          }
-        } else {
-          newVeoPrompt = await generateVeoPrompt({
+        const newVeoPrompt = await generateVeoPrompt({
             description: editedScene.description,
             cameraAngle: editedScene.cameraAngle,
             overallMood: overallMood,
-          });
-        }
+        });
 
         const parsedLyrics = stringToLyricsForSave(lyricsString);
         // When saving edits, we preserve the existing videoUrl
@@ -523,32 +316,6 @@ const SceneCard: React.FC<SceneCardProps> = ({
               )}
               {!isEditing && (
                 <div className="flex items-center gap-1">
-                  {/* Generate Thumbnail Button (Imagen 3) */}
-                  <button
-                    onClick={() => handleGenerateThumbnail()}
-                    disabled={isGeneratingThumbnail || isGeneratingVideo}
-                    className="p-2 rounded-full text-indigo-300 hover:bg-slate-700 hover:text-indigo-200 transition-colors duration-200"
-                    aria-label="Generate Imagen 3 Concept Thumbnail"
-                    title="Generate Scene Visual Thumbnail (Google Imagen 3)"
-                  >
-                    {isGeneratingThumbnail ? (
-                      <div className="animate-spin h-5 w-5 border-2 border-slate-400 border-t-indigo-400 rounded-full" />
-                    ) : (
-                      <PhotoIcon className="w-5 h-5 text-indigo-400" />
-                    )}
-                  </button>
-
-                  {/* Instant Motion Video Generator Button (Client-Side Procedural Preview) */}
-                  <button
-                    onClick={handleGenerateMotionPreview}
-                    disabled={isGeneratingVideo || isGeneratingThumbnail}
-                    className="p-2 rounded-full text-cyan-300 hover:bg-slate-700 hover:text-cyan-200 transition-colors duration-200"
-                    aria-label="Render instant procedural motion preview video"
-                    title="Render Instant Motion Preview (Free in Browser)"
-                  >
-                    <SparklesIcon className="w-5 h-5 text-cyan-400" />
-                  </button>
-
                   {isGeneratingVideo ? (
                     <div className="p-2 w-9 h-9 flex items-center justify-center" aria-label="Generating video...">
                       <div className="animate-spin h-5 w-5 border-2 border-slate-400 border-t-indigo-400 rounded-full"></div>
@@ -559,7 +326,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
                         onClick={handleGenerateVideoClick}
                         className="p-2 rounded-full text-slate-400 hover:bg-slate-700 hover:text-indigo-400 transition-colors duration-200"
                         aria-label="Regenerate video for this scene"
-                        title={engineMode === 'comfyui' ? 'Regenerate Video with ComfyUI' : 'Generate Video with VEO'}
+                        title="Regenerate Video"
                       >
                         <ArrowPathIcon className="w-5 h-5"/>
                       </button>
@@ -568,21 +335,11 @@ const SceneCard: React.FC<SceneCardProps> = ({
                         onClick={handleGenerateVideoClick}
                         className="p-2 rounded-full text-slate-400 hover:bg-slate-700 hover:text-indigo-400 transition-colors duration-200"
                         aria-label="Generate video for this scene"
-                        title={engineMode === 'comfyui' ? 'Generate Video with ComfyUI' : 'Generate Video with VEO'}
+                        title="Generate Video"
                       >
                         <FilmIcon className="w-5 h-5"/>
                       </button>
                     )
-                  )}
-                  {onOpenPromptLibrary && (
-                    <button
-                      onClick={() => onOpenPromptLibrary(scene.sceneNumber)}
-                      className="p-2 rounded-full text-slate-400 hover:bg-slate-700 hover:text-indigo-400 transition-colors duration-200"
-                      aria-label="Open style prompt library for this scene"
-                      title="Apply Style Preset from Prompt Library"
-                    >
-                      <SwatchIcon className="w-5 h-5"/>
-                    </button>
                   )}
                   <button 
                     onClick={onEdit} 
@@ -665,23 +422,10 @@ const SceneCard: React.FC<SceneCardProps> = ({
 
             {/* --- VEO PROMPT GROUP --- */}
             <div className="bg-slate-900 p-4 rounded-lg border border-slate-600">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
-                <h4 className="font-bold text-cyan-400 flex items-center gap-2">
-                  <CameraIcon className="w-5 h-5"/>
-                  VEO Prompt (Auto-Generated on Save)
-                </h4>
-                {onOpenPromptLibrary && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenPromptLibrary(scene.sceneNumber)}
-                    className="self-start sm:self-auto text-xs px-2.5 py-1 rounded-md bg-indigo-900/70 hover:bg-indigo-800 text-indigo-200 border border-indigo-700/60 hover:text-white transition-colors flex items-center gap-1.5 font-medium"
-                    title="Browse and inject style presets from Prompt Library"
-                  >
-                    <SwatchIcon className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>Apply Style from Library</span>
-                  </button>
-                )}
-              </div>
+              <h4 className="font-bold text-cyan-400 flex items-center gap-2 mb-2">
+                <CameraIcon className="w-5 h-5"/>
+                VEO Prompt (Auto-Generated on Save)
+              </h4>
                <textarea
                     id={`veoPrompt-${scene.sceneNumber}`}
                     name="veoPrompt"
@@ -723,339 +467,38 @@ const SceneCard: React.FC<SceneCardProps> = ({
           </div>
         ) : (
           <>
-            {/* Visual Media Stage (Imagen Thumbnail / Video Preview) */}
-            <div className="my-4">
-              {/* Media Switcher Tab Header if both or either media exists */}
-              {(scene.thumbnailUrl || scene.videoUrl || isGeneratingThumbnail || isGeneratingVideo) && (
-                <div className="flex items-center justify-between mb-3 border-b border-slate-700 pb-2">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setPreviewTab('thumbnail')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                        previewTab === 'thumbnail'
-                          ? 'bg-indigo-600 text-white shadow-md'
-                          : 'bg-slate-900/80 text-slate-400 hover:text-slate-200 border border-slate-700'
-                      }`}
-                    >
-                      <PhotoIcon className="w-3.5 h-3.5" />
-                      <span>Visual Concept (Imagen 3)</span>
-                      {scene.thumbnailUrl && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>}
-                    </button>
-
-                    <button
-                      onClick={() => setPreviewTab('video')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                        previewTab === 'video'
-                          ? 'bg-cyan-600 text-white shadow-md'
-                          : 'bg-slate-900/80 text-slate-400 hover:text-slate-200 border border-slate-700'
-                      }`}
-                    >
-                      <FilmIcon className="w-3.5 h-3.5" />
-                      <span>Video Simulation</span>
-                      {scene.videoUrl && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>}
-                    </button>
-                  </div>
-
-                  {previewTab === 'thumbnail' && scene.thumbnailUrl && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleDownloadThumbnail}
-                        className="text-xs text-slate-400 hover:text-cyan-300 flex items-center gap-1 transition-colors"
-                        title="Download Scene Thumbnail"
-                      >
-                        <DownloadIcon className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">Save Image</span>
-                      </button>
-                      <button
-                        onClick={() => handleGenerateThumbnail()}
-                        disabled={isGeneratingThumbnail}
-                        className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
-                        title="Regenerate with Imagen 3"
-                      >
-                        <ArrowPathIcon className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">Regenerate</span>
-                      </button>
-                    </div>
-                  )}
+            {isGeneratingVideo && (
+              <div className="my-4 p-4 bg-slate-900 rounded-lg border border-indigo-500/50 flex flex-col items-center justify-center text-center">
+                <Loader />
+                <p className="mt-3 text-sm font-semibold text-indigo-300 animate-pulse">
+                  Generating Video...
+                </p>
+                {generationStatus && (
+                  <p className="mt-1 text-xs text-slate-400">{generationStatus}</p>
+                )}
+                <p className="mt-3 text-xs text-slate-500">This process can take several minutes. Please keep this tab open.</p>
+              </div>
+            )}
+            
+            {generationError && !isGeneratingVideo && (
+                <div className="my-4 p-3 bg-red-900/40 border border-red-700 text-red-200 text-sm rounded-md" role="alert">
+                    <p className="font-bold">Video Generation Failed</p>
+                    <p className="leading-relaxed">{formatErrorMessage(generationError)}</p>
                 </div>
-              )}
+            )}
 
-              {/* 1. THUMBNAIL TAB VIEW */}
-              {previewTab === 'thumbnail' && (
-                <div>
-                  {isGeneratingThumbnail && (
-                    <div className="p-6 bg-slate-900 rounded-xl border border-indigo-500/50 flex flex-col items-center justify-center text-center">
-                      <Loader />
-                      <p className="mt-3 text-sm font-semibold text-indigo-300 animate-pulse">
-                        {thumbnailStatus || "Synthesizing cinematic thumbnail with Google Imagen 3..."}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-400">Crafting 16:9 photorealistic visual style representation...</p>
-                    </div>
-                  )}
-
-                  {thumbnailError && !isGeneratingThumbnail && (
-                    <div className="p-4 bg-slate-900/95 border border-amber-500/60 text-slate-200 rounded-xl shadow-lg mb-4">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <InformationCircleIcon className="w-5 h-5 text-amber-400 flex-shrink-0" />
-                        <p className="font-bold text-amber-300">
-                          {thumbnailError.includes('IMAGEN_QUOTA_EXHAUSTED') || thumbnailError.includes('RESOURCE_EXHAUSTED') || thumbnailError.includes('429') || thumbnailError.toLowerCase().includes('depleted')
-                            ? 'AI Studio Quota / Credits Depleted'
-                            : thumbnailError.includes('IMAGEN_PERMISSION_DENIED')
-                            ? 'Google Imagen Access Notice'
-                            : thumbnailError.includes('API_KEY_NOT_FOUND')
-                            ? 'API Key Required'
-                            : 'Thumbnail Generation Notice'}
-                        </p>
-                      </div>
-                      <p className="text-xs text-slate-300 mb-3 leading-relaxed">
-                        {thumbnailError.includes('IMAGEN_QUOTA_EXHAUSTED') || thumbnailError.includes('RESOURCE_EXHAUSTED') || thumbnailError.includes('429') || thumbnailError.toLowerCase().includes('depleted')
-                          ? 'Your Google AI Studio project credits or quota for Google Imagen are currently depleted. You can select another API key, or generate an instant conceptual artboard locally in your browser for free.'
-                          : thumbnailError.includes('IMAGEN_PERMISSION_DENIED')
-                          ? 'Google Imagen 3 API is not enabled for this key. You can select another API key or generate an instant offline concept artboard with the browser canvas renderer.'
-                          : thumbnailError.includes('API_KEY_NOT_FOUND')
-                          ? 'Please configure or select a valid Google AI Studio API key with access to Imagen models.'
-                          : formatErrorMessage(thumbnailError)}
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {typeof window !== 'undefined' && window.aistudio?.openSelectKey && (
-                          <button
-                            onClick={async () => {
-                              try {
-                                await window.aistudio?.openSelectKey?.();
-                                setThumbnailError(null);
-                                handleGenerateThumbnail();
-                              } catch (e) {
-                                console.warn(e);
-                              }
-                            }}
-                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg shadow flex items-center gap-1.5 transition-all"
-                          >
-                            <KeyIcon className="w-3.5 h-3.5" />
-                            <span>Select / Change API Key</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={handleGenerateProceduralThumbnailArt}
-                          className="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow"
-                        >
-                          <SparklesIcon className="w-3.5 h-3.5 text-amber-300" />
-                          <span>Generate Free Concept Artboard</span>
-                        </button>
-                        <button
-                          onClick={() => handleGenerateThumbnail()}
-                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5"
-                        >
-                          <ArrowPathIcon className="w-3.5 h-3.5" />
-                          <span>Retry</span>
-                        </button>
-                        <button
-                          onClick={() => setThumbnailError(null)}
-                          className="px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200"
-                        >
-                          Dismiss
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {scene.thumbnailUrl && !isGeneratingThumbnail ? (
-                    <div className="relative aspect-video rounded-xl overflow-hidden border border-slate-700 shadow-xl group bg-black">
-                      <img
-                        src={scene.thumbnailUrl}
-                        alt={`Scene ${scene.sceneNumber} visual style preview`}
-                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-                        referrerPolicy="no-referrer"
-                      />
-
-                      {/* Header Badge */}
-                      <div className="absolute top-3 left-3 flex items-center gap-2">
-                        <span className="px-2.5 py-1 bg-slate-950/80 backdrop-blur-md text-cyan-300 font-bold text-xs rounded-lg border border-slate-700/80 flex items-center gap-1.5 shadow-lg">
-                          <SparklesIcon className="w-3.5 h-3.5 text-yellow-400" />
-                          Imagen 3 Visual Concept
-                        </span>
-                      </div>
-
-                      {/* Hover Overlay Controls */}
-                      <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-between p-4">
-                        <div>
-                          <p className="text-xs text-slate-200 font-medium line-clamp-1 mb-1">
-                            {scene.thumbnailPrompt || scene.veoPrompt}
-                          </p>
-                          <span className="text-[10px] text-slate-400 font-mono">16:9 Cinematic Still</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => setShowThumbnailLightbox(true)}
-                            className="px-3 py-1.5 bg-slate-900/90 text-white text-xs font-bold rounded-lg border border-slate-700 hover:bg-indigo-600 transition-colors shadow"
-                          >
-                            Enlarge
-                          </button>
-                          <button
-                            onClick={handleDownloadThumbnail}
-                            className="p-2 bg-slate-900/90 text-slate-300 hover:text-cyan-300 rounded-lg border border-slate-700 transition-colors"
-                            title="Download Image"
-                          >
-                            <DownloadIcon className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : !isGeneratingThumbnail && !thumbnailError && (
-                    <div className="p-5 bg-gradient-to-r from-slate-900/90 via-indigo-950/30 to-slate-900/90 rounded-xl border border-slate-700/80 flex flex-col sm:flex-row items-center justify-between gap-4">
-                      <div className="flex items-center gap-3 text-left">
-                        <div className="p-3 bg-indigo-950/80 rounded-xl border border-indigo-800/60 flex-shrink-0">
-                          <PhotoIcon className="w-6 h-6 text-indigo-400" />
-                        </div>
-                        <div>
-                          <h4 className="text-sm font-bold text-slate-200">
-                            Scene {scene.sceneNumber} Visual Style Preview
-                          </h4>
-                          <p className="text-xs text-slate-400">
-                            Generate a high-definition Imagen 3 concept still matching this scene's lighting, camera angle, and mood.
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 flex-shrink-0 w-full sm:w-auto">
-                        <button
-                          onClick={() => handleGenerateThumbnail()}
-                          disabled={isGeneratingThumbnail}
-                          className="w-full sm:w-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg shadow-md flex items-center justify-center gap-2 transition-all"
-                        >
-                          <SparklesIcon className="w-4 h-4 text-cyan-200" />
-                          <span>Generate (Imagen 3)</span>
-                        </button>
-                        <button
-                          onClick={handleGenerateProceduralThumbnailArt}
-                          className="w-full sm:w-auto px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg border border-slate-700 transition-colors"
-                          title="Instant Procedural Concept Art"
-                        >
-                          Concept Art
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* 2. VIDEO TAB VIEW */}
-              {previewTab === 'video' && (
-                <div>
-                  {isGeneratingVideo && (
-                    <div className="p-6 bg-slate-900 rounded-xl border border-indigo-500/50 flex flex-col items-center justify-center text-center">
-                      <Loader />
-                      <p className="mt-3 text-sm font-semibold text-indigo-300 animate-pulse">
-                        Generating Video...
-                      </p>
-                      {generationStatus && (
-                        <p className="mt-1 text-xs text-slate-400">{generationStatus}</p>
-                      )}
-                      <p className="mt-3 text-xs text-slate-500">This process can take several minutes. Please keep this tab open.</p>
-                    </div>
-                  )}
-                  
-                  {generationError && !isGeneratingVideo && (
-                    <div className="p-4 bg-slate-900/95 border border-amber-500/60 text-slate-200 rounded-xl shadow-lg mb-4" role="alert">
-                      <div className="flex items-center gap-2 mb-2">
-                        <InformationCircleIcon className="w-5 h-5 text-amber-400 flex-shrink-0" />
-                        <p className="font-bold text-amber-300">
-                          {generationError === 'VEO_PERMISSION_DENIED' ? 'Google VEO API Permission Notice' : 'Video Generation Notice'}
-                        </p>
-                      </div>
-                      <p className="text-sm text-slate-300 leading-relaxed mb-3">
-                        {generationError === 'VEO_PERMISSION_DENIED'
-                          ? 'Google VEO Cloud Video generation requires a paid Google Cloud / Vertex AI subscription with Video Generation permissions enabled. You can generate videos for free using the built-in Motion Simulator or local ComfyUI GPU mode.'
-                          : formatErrorMessage(generationError)}
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
-                        <button
-                          type="button"
-                          onClick={handleGenerateMotionPreview}
-                          className="px-3 py-1.5 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white text-xs font-bold rounded-md shadow flex items-center gap-1.5 transition-all"
-                          title="Render a real animated procedural preview video in browser"
-                        >
-                          <SparklesIcon className="w-4 h-4 text-cyan-200" />
-                          <span>Render Instant Motion Preview (Free)</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleCopy}
-                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5"
-                          title="Copy prompt for Midjourney, Runway Gen-3, Pika, or Kling"
-                        >
-                          <ClipboardIcon className="w-3.5 h-3.5 text-slate-400" />
-                          <span>Copy Prompt for Runway/Midjourney</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setGenerationError(null)}
-                          className="px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors"
-                        >
-                          Dismiss
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {scene.videoUrl && !isGeneratingVideo && (
-                    <div className="bg-black rounded-xl overflow-hidden border border-slate-600 shadow-xl">
-                      <video
+            {scene.videoUrl && !isGeneratingVideo && (
+                <div className="my-4 bg-black rounded-lg overflow-hidden border border-slate-600">
+                    <video
                         key={scene.videoUrl} 
                         controls
                         className="w-full h-auto"
                         aria-label={`Generated video for scene ${scene.sceneNumber}`}
-                      >
+                    >
                         <source src={scene.videoUrl} type="video/mp4" />
                         Your browser does not support the video tag.
-                      </video>
-                    </div>
-                  )}
+                    </video>
                 </div>
-              )}
-            </div>
-
-            {/* Fullscreen Thumbnail Lightbox Modal */}
-            {showThumbnailLightbox && scene.thumbnailUrl && (
-              <div 
-                className="fixed inset-0 z-60 bg-black/95 flex flex-col items-center justify-center p-4 animate-fadeIn"
-                onClick={() => setShowThumbnailLightbox(false)}
-              >
-                <div 
-                  className="max-w-5xl w-full flex flex-col items-center"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="w-full flex items-center justify-between mb-3 text-slate-200">
-                    <div>
-                      <h3 className="text-lg font-bold text-cyan-400">Scene {scene.sceneNumber} Visual Concept</h3>
-                      <p className="text-xs text-slate-400">{scene.description}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleDownloadThumbnail}
-                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700 flex items-center gap-1.5"
-                      >
-                        <DownloadIcon className="w-4 h-4" />
-                        <span>Download</span>
-                      </button>
-                      <button
-                        onClick={() => setShowThumbnailLightbox(false)}
-                        className="p-1.5 text-slate-400 hover:text-white rounded-lg"
-                      >
-                        <XCircleIcon className="w-6 h-6" />
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <div className="w-full aspect-video rounded-xl overflow-hidden border border-slate-700 shadow-2xl bg-black">
-                    <img
-                      src={scene.thumbnailUrl}
-                      alt={`Scene ${scene.sceneNumber} Full Size`}
-                      className="w-full h-full object-contain"
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
-                </div>
-              </div>
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -1094,98 +537,29 @@ const SceneCard: React.FC<SceneCardProps> = ({
               <p className="text-slate-300">{scene.description}</p>
             </div>
 
-            {/* ComfyUI AI Intelligence & Auto-Workflow Bar */}
-            <div className="bg-slate-900 p-4 rounded-xl border border-slate-700 shadow-md">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-                <div className="flex items-center gap-2">
-                  <CameraIcon className="w-5 h-5 text-cyan-400"/>
-                  <h4 className="font-bold text-cyan-400">
-                    {engineMode === 'comfyui' ? 'ComfyUI AI Model Prompt' : 'VEO Prompt'}
-                  </h4>
-                  {engineMode === 'comfyui' && comfyConfig && (
-                    <span className="px-2 py-0.5 bg-indigo-950 text-indigo-300 border border-indigo-700/50 rounded-full text-[10px] font-mono">
-                      {COMFYUI_ARCHITECTURES[comfyConfig.workflowType]?.name || 'Wan 2.1 Video'}
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* AI Auto-Tune Workflow Button */}
-                  <button
-                    onClick={handleAiAutoTuneScene}
-                    className="flex items-center text-xs px-2.5 py-1 rounded-md bg-gradient-to-r from-cyan-600/80 to-indigo-600/80 hover:from-cyan-500 hover:to-indigo-500 text-white font-semibold transition-all shadow-sm group"
-                    title="Automatically optimize camera motion, cinematic lighting keywords, and model formatting for this scene"
-                  >
-                    <SparklesIcon className="w-3.5 h-3.5 mr-1 text-cyan-200 group-hover:rotate-12 transition-transform" />
-                    AI Auto-Tune
-                  </button>
-
-                  <button
-                    onClick={handleCopy}
-                    className="flex items-center text-xs px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-                  >
-                    {copied ? (
-                      <>
-                        <CheckIcon className="w-3.5 h-3.5 mr-1 text-green-400" />
-                        Copied!
-                      </>
-                    ) : (
-                      <>
-                        <ClipboardIcon className="w-3.5 h-3.5 mr-1" />
-                        Copy Prompt
-                      </>
-                    )}
-                  </button>
-
-                  {comfyConfig && (
+            <div className="bg-slate-900 p-4 rounded-lg border border-slate-600">
+              <div className="flex justify-between items-center mb-2">
+                <h4 className="font-bold text-cyan-400 flex items-center gap-2">
+                  <CameraIcon className="w-5 h-5"/>
+                  VEO Prompt
+                </h4>
+                <button
+                  onClick={handleCopy}
+                  className="flex items-center text-xs px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                >
+                  {copied ? (
                     <>
-                      <button
-                        onClick={handleCopyComfyJson}
-                        className="flex items-center text-xs px-2.5 py-1 rounded-md bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/50 transition-colors"
-                        title="Copy ComfyUI API Prompt payload JSON"
-                      >
-                        {copiedComfy ? (
-                          <>
-                            <CheckIcon className="w-3.5 h-3.5 mr-1 text-green-400" />
-                            API JSON Copied!
-                          </>
-                        ) : (
-                          <>
-                            <ClipboardIcon className="w-3.5 h-3.5 mr-1 text-indigo-400" />
-                            API JSON
-                          </>
-                        )}
-                      </button>
-
-                      <button
-                        onClick={handleDownloadComfyWorkflow}
-                        className="flex items-center text-xs px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-800 transition-colors"
-                        title="Download ComfyUI API Workflow JSON file for local desktop"
-                      >
-                        <FilmIcon className="w-3.5 h-3.5 mr-1 text-cyan-400" />
-                        .json
-                      </button>
-
-                      <button
-                        onClick={handleDownloadCanvasWorkflow}
-                        className="flex items-center text-xs px-2.5 py-1 rounded-md bg-indigo-900/50 hover:bg-indigo-800 text-cyan-200 border border-indigo-700/60 transition-colors"
-                        title="Download full ComfyUI Canvas UI Workflow for direct Web GUI drag & drop"
-                      >
-                        <CodeBracketIcon className="w-3.5 h-3.5 mr-1 text-indigo-400" />
-                        Canvas UI
-                      </button>
+                      <CheckIcon className="w-4 h-4 mr-1 text-green-400" />
+                      Copied!
+                    </>
+                  ) : (
+                    <>
+                      <ClipboardIcon className="w-4 h-4 mr-1" />
+                      Copy
                     </>
                   )}
-                </div>
+                </button>
               </div>
-
-              {autoTuneToast && (
-                <div className="mb-2 p-2 bg-emerald-950/80 border border-emerald-700 text-emerald-300 text-xs rounded flex items-center gap-1.5 animate-fadeIn">
-                  <CheckCircle2Icon className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>{autoTuneToast}</span>
-                </div>
-              )}
-
               <p className="text-slate-200 font-mono text-sm leading-relaxed">{scene.veoPrompt}</p>
             </div>
           </>

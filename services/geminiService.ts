@@ -1,6 +1,5 @@
 import { GoogleGenAI, Type, Part } from "@google/genai";
 import { VideoScript, MoodPreset } from '../types';
-import { generateLocalVideoScript } from './localScriptService';
 
 const responseSchema = {
   type: Type.OBJECT,
@@ -296,10 +295,8 @@ const getBasePrompt = (totalSeconds: number, mood: MoodPreset) => {
 
 export const generateVideoScript = async (input: { lyrics: string; audioFile: File | null }, totalSeconds: number, mood: MoodPreset): Promise<VideoScript> => {
   if (!process.env.API_KEY) {
-    console.warn("API_KEY environment variable is not set. Using local script engine fallback.");
-    return generateLocalVideoScript(input, totalSeconds, mood);
+    throw new Error("API_KEY environment variable is not set.");
   }
-
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const basePrompt = getBasePrompt(totalSeconds, mood);
@@ -307,6 +304,8 @@ export const generateVideoScript = async (input: { lyrics: string; audioFile: Fi
   let textPrompt = '';
 
   if (input.audioFile && input.lyrics.trim()) {
+    // Case 1: Both Audio and Lyrics provided.
+    // Instruct the AI to use the audio for structure/mood and lyrics for the text.
     textPrompt = `
       Use the provided audio file to understand the song's structure, mood, and pacing. The provided lyrics are the definitive source for the words.
       Align the provided lyrics with the audio's structure (verses, chorus, etc.) and then ${basePrompt}
@@ -317,11 +316,15 @@ export const generateVideoScript = async (input: { lyrics: string; audioFile: Fi
       ---
     `;
   } else if (input.audioFile) {
+    // Case 2: Audio Only.
+    // Instruct the AI to transcribe the lyrics first.
     textPrompt = `
       First, transcribe the lyrics and identify the structure (verses, chorus, etc.) from the provided audio file.
       Then, using the transcribed lyrics and your analysis of the audio's feel, ${basePrompt}
     `;
   } else if (input.lyrics.trim()) {
+    // Case 3: Lyrics Only.
+    // Instruct the AI to analyze the provided text.
     textPrompt = `
       Analyze the following song lyrics, which include structural markers like [Verse], [Chorus], [Bridge], and potentially instrumental sections like [Instrumental] or [Guitar Solo], to ${basePrompt}
       
@@ -331,29 +334,26 @@ export const generateVideoScript = async (input: { lyrics: string; audioFile: Fi
       ---
     `;
   } else {
+    // This case should be prevented by UI validation.
     throw new Error("Please provide either lyrics or an audio file.");
   }
 
   parts.push({ text: textPrompt });
 
   if (input.audioFile) {
-    try {
-      const audioBase64 = await fileToBase64(input.audioFile);
-      const audioPart: Part = {
-        inlineData: {
-          mimeType: input.audioFile.type,
-          data: audioBase64,
-        },
-      };
-      parts.push(audioPart);
-    } catch (e) {
-      console.warn("Could not encode audio file, proceeding with text prompt analysis.");
-    }
+    const audioBase64 = await fileToBase64(input.audioFile);
+    const audioPart: Part = {
+      inlineData: {
+        mimeType: input.audioFile.type,
+        data: audioBase64,
+      },
+    };
+    parts.push(audioPart);
   }
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.5-pro",
       contents: parts,
       config: {
         responseMimeType: "application/json",
@@ -366,30 +366,31 @@ export const generateVideoScript = async (input: { lyrics: string; audioFile: Fi
       throw new Error(`Your request was blocked due to safety concerns (${response.promptFeedback.blockReason}). Please modify your input.`);
     }
 
-    const jsonText = response.text?.trim() || '';
+    const jsonText = response.text.trim();
 
     if (!jsonText) {
-      console.warn("AI returned an empty response text. Falling back to local script generator.");
-      return generateLocalVideoScript(input, totalSeconds, mood);
+      console.error("AI returned an empty response text.");
+      throw new Error("The AI returned an empty response. Please try modifying your input or try again.");
     }
 
     try {
       const parsedJson = JSON.parse(jsonText);
       return parsedJson as VideoScript;
     } catch (e) {
-      console.warn("Failed to parse JSON from AI response. Falling back to local script generator.");
-      return generateLocalVideoScript(input, totalSeconds, mood);
+      console.error("Failed to parse JSON from AI response:", jsonText);
+      throw new Error("The AI returned a response in an invalid format. Please try your request again.");
     }
-  } catch (error: any) {
-    console.warn("Gemini API call in generateVideoScript encountered error or quota depletion. Falling back to local script generator:", error);
-    
-    const errStr = error?.message || (typeof error === 'object' ? JSON.stringify(error) : String(error));
-    if (errStr.includes("blocked due to safety concerns")) {
-      throw new Error(`Your request was blocked due to safety concerns. Please modify your lyrics or prompt.`);
+  } catch (error) {
+    console.error("Error in generateVideoScript:", error);
+    if (error instanceof Error && (
+      error.message.includes("blocked due to safety concerns") ||
+      error.message.includes("empty response") ||
+      error.message.includes("invalid format")
+    )) {
+      throw error; // Re-throw our specific, user-friendly errors
     }
-
-    // Automatically fall back to local script generation for seamless user experience even when credits/quota are exhausted
-    return generateLocalVideoScript(input, totalSeconds, mood);
+    // Throw a generic error for other cases (e.g., network issues)
+    throw new Error("An unexpected error occurred communicating with the AI. Please check your network and try again.");
   }
 };
 
@@ -404,20 +405,13 @@ export const generateVeoPrompt = async (details: {
   cameraAngle?: string;
   overallMood: string;
 }): Promise<string> => {
+  if (!process.env.API_KEY) {
+    throw new Error("API_KEY environment variable is not set.");
+  }
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const { description, cameraAngle, overallMood } = details;
 
-  const buildLocalPrompt = () => {
-    const angleStr = cameraAngle && cameraAngle !== 'Not specified' ? `${cameraAngle} of ` : 'Cinematic shot of ';
-    return `${angleStr}${description}. Highly detailed cinematic scene with ${overallMood.toLowerCase()} atmosphere, 35mm lens, volumetric lighting, 8k resolution render.`;
-  };
-
-  if (!process.env.API_KEY) {
-    return buildLocalPrompt();
-  }
-
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const prompt = `
+  const prompt = `
     You are an expert cinematic director specializing in creating prompts for AI video generation models like VEO.
     Your task is to take a scene description and transform it into a single, powerful, and highly specific VEO prompt, using the provided context intelligently.
 
@@ -426,23 +420,46 @@ export const generateVeoPrompt = async (details: {
     **Suggested Camera Angle:** ${cameraAngle || 'Not specified'}
 
     **Instructions (Follow Strictly):**
-    1. **Synthesize, Don't Just Copy:** Do not just rephrase the description. Enhance it with cinematic details inspired by the description and overall mood.
-    2. **Single Command:** The output MUST be a single, direct command. Start immediately with the visual description. Do not use conversational phrases like "The prompt is:" or "Here is a prompt:".
-    3. **Context-Aware Camera Direction:**
-        * **If 'Suggested Camera Angle' is provided:** Use it as the primary inspiration for the camera shot and angle in your prompt. Enhance it with specific movement. For example, if the angle is 'low angle shot', you could create 'dynamic low angle tracking shot moving upwards'.
-        * **If 'Suggested Camera Angle' is 'Not specified':** You MUST invent a creative and dynamic camera angle and movement that fits the scene's description and the overall mood. Do not default to a static or simple shot.
-    4. **Mood-Driven Stylistic Elements:** You MUST incorporate specific visual effects or stylistic choices that directly reflect the **Overall Mood**.
-    5. **Be Specific and Cinematic:** Combine all of the following elements into a single, flowing, and descriptive sentence.
+    1.  **Synthesize, Don't Just Copy:** Do not just rephrase the description. Enhance it with cinematic details inspired by the description and overall mood.
+    2.  **Single Command:** The output MUST be a single, direct command. Start immediately with the visual description. Do not use conversational phrases like "The prompt is:" or "Here is a prompt:".
+    3.  **Context-Aware Camera Direction:**
+        *   **If 'Suggested Camera Angle' is provided:** Use it as the primary inspiration for the camera shot and angle in your prompt. Enhance it with specific movement. For example, if the angle is 'low angle shot', you could create 'dynamic low angle tracking shot moving upwards'.
+        *   **If 'Suggested Camera Angle' is 'Not specified':** You MUST invent a creative and dynamic camera angle and movement that fits the scene's description and the overall mood. Do not default to a static or simple shot.
+    4.  **Mood-Driven Stylistic Elements:** You MUST incorporate specific visual effects or stylistic choices that directly reflect the **Overall Mood**. For a '${overallMood}' mood, consider appropriate effects (e.g., for 'Melancholic', suggest 'slow motion, film grain'; for 'Cyberpunk', suggest 'neon glows, glitch effects').
+    5.  **Be Specific and Cinematic (The Final Prompt):** Combine all of the following elements into a single, flowing, and descriptive sentence.
+        *   **Subject & Action:** What is happening and who/what is doing it?
+        *   **Camera Shot & Angle:** Derived from your logic in step 3.
+        *   **CRITICAL - Dynamic Camera Movement:** It is mandatory to include a specific, dynamic camera movement. Examples: 'dolly zoom', 'whip pan', 'orbital shot'.
+        *   **CRITICAL - Lens Specification:** It is mandatory to specify a lens type. Examples: 'wide-angle lens', 'telephoto lens', 'macro lens'.
+        *   **Lighting:** Describe the lighting with evocative terms (e.g., 'ominous silhouette lighting', 'soft golden hour light').
+        *   **Visual Effects & Style:** Derived from your logic in step 4.
+
+    **Example Input 1:**
+    - Overall Mood: Melancholic
+    - Scene Description: A person stands alone on a rainy street at night, looking at their reflection in a puddle.
+    - Suggested Camera Angle: high angle shot
+
+    **Example Output 1:**
+    Overhead crane shot slowly descending towards a lone figure on a rain-slicked street at night, telephoto lens compressing the scene, their face reflected in a neon-lit puddle, slow motion, cinematic film grain.
+    
+    **Example Input 2:**
+    - Overall Mood: Cyberpunk
+    - Scene Description: A hacker works furiously at a glowing terminal in a cluttered room.
+    - Suggested Camera Angle: Not specified
+    
+    **Example Output 2:**
+    Tight orbital shot around a hacker's face, illuminated only by cascading green code on their terminal, wide-angle lens capturing the cluttered room, subtle digital glitch effects and neon light reflections on their glasses.
   `;
   
+  try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: prompt,
     });
     return response.text.trim();
-  } catch (error: any) {
-    console.warn("Gemini API quota depleted or error occurred during VEO prompt generation. Falling back to local prompt synthesizer:", error);
-    return buildLocalPrompt();
+  } catch (error) {
+    console.error("Error generating VEO prompt:", error);
+    throw new Error("Failed to generate an updated VEO prompt. Please try again.");
   }
 };
 
@@ -515,28 +532,16 @@ export const generateVideoFromPrompt = async (
   } catch (error: any) {
     console.error("Error in generateVideoFromPrompt:", error);
     
-    const rawMsg = typeof error === 'string' ? error : (error?.error?.message || error?.message || '');
-    const errorStatus = error?.error?.status || error?.status;
-    const errorCode = error?.error?.code || error?.code;
+    const errorMessage = error?.error?.message || error?.message || 'An unknown error occurred.';
+    const errorStatus = error?.error?.status;
     
-    // Handle invalid/missing API key error
-    if (rawMsg.includes("Requested entity was not found") || !process.env.API_KEY) {
+    // Handle invalid/missing API key error first
+    if (errorMessage.includes("Requested entity was not found")) {
       throw new Error('API_KEY_NOT_FOUND');
     }
 
-    // Handle 403 / PERMISSION_DENIED (VEO Cloud video generation requires paid Google Cloud / Vertex AI billing)
-    const isPermissionDenied = 
-      errorCode === 403 || 
-      errorStatus === 'PERMISSION_DENIED' || 
-      rawMsg.toLowerCase().includes('permission') || 
-      rawMsg.toLowerCase().includes('caller does not have permission');
-
-    if (isPermissionDenied) {
-      throw new Error('VEO_PERMISSION_DENIED');
-    }
-
     // Handle Quota Exceeded error specifically
-    if (errorStatus === 'RESOURCE_EXHAUSTED' || rawMsg.includes('quota')) {
+    if (errorStatus === 'RESOURCE_EXHAUSTED' || errorMessage.includes('quota')) {
         const billingUrl = "https://ai.google.dev/gemini-api/docs/billing";
         const quotaUrl = "https://ai.google.dev/gemini-api/docs/rate-limits";
         
@@ -545,7 +550,7 @@ export const generateVideoFromPrompt = async (
     }
     
     // Generic fallback for other errors
-    throw new Error(`Video Generation Failed: ${rawMsg || 'An unknown error occurred.'}`);
+    throw new Error(`Video Generation Failed: ${errorMessage}`);
   }
 };
 
